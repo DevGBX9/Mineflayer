@@ -4,3 +4,15 @@ main: com.devgbx9.mineflayer.Mineflayer
 description: ${mod_description}
 author: ${mod_author}
 api-version: '${api_version}'
+
+commands:
+  mineflayer:
+    description: Mineflayer control command
+    usage: '/mineflayer m <start|stop>'
+    aliases: [ mf ]
+    permission: mineflayer.command
+
+permissions:
+  mineflayer.command:
+    description: Allows use of /mineflayer
+    default: op
