@@ -41,6 +41,10 @@ processResources {
 jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
+    // Gradle cannot infer the task dependency through the lazy zipTree closure
+    // below, so it has to be declared explicitly.
+    dependsOn configurations.shade
+
     from {
         configurations.shade.collect { it.isDirectory() ? it : zipTree(it) }
     } {
