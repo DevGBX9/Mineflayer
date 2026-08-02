@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -11,15 +12,20 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 
 /**
- * Handles {@code /mineflayer m <start|stop>}.
- *
- * <p>Nothing is started or stopped yet: the command only acknowledges that the
- * plugin is loaded and reachable.
+ * Handles {@code /mineflayer m <start|stop>}, which brings the monitoring fake
+ * player online and takes it back off.
  */
 public class MineflayerCommand implements CommandExecutor, TabCompleter {
 
     private static final String SUB = "m";
     private static final List<String> ACTIONS = List.of("start", "stop");
+    private static final String PREFIX = ChatColor.AQUA + "[Mineflayer] " + ChatColor.WHITE;
+
+    private final FakePlayerManager manager;
+
+    public MineflayerCommand(FakePlayerManager manager) {
+        this.manager = manager;
+    }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -33,9 +39,44 @@ public class MineflayerCommand implements CommandExecutor, TabCompleter {
             return false;
         }
 
-        sender.sendMessage(ChatColor.AQUA + "[Mineflayer] "
-                + ChatColor.WHITE + "'" + action + "' received - plugin is running.");
+        if (action.equals("start")) {
+            start(sender);
+        } else {
+            stop(sender);
+        }
         return true;
+    }
+
+    private void start(CommandSender sender) {
+        if (manager.isOnline()) {
+            sender.sendMessage(PREFIX + ChatColor.YELLOW + manager.name() + " is already online.");
+            return;
+        }
+
+        String failure = manager.start();
+        if (failure == null) {
+            sender.sendMessage(PREFIX + ChatColor.GREEN + manager.name() + " joined. "
+                    + ChatColor.WHITE + "Players online: " + Bukkit.getOnlinePlayers().size() + ".");
+        } else {
+            sender.sendMessage(PREFIX + ChatColor.RED + "Could not start: " + failure);
+            sender.sendMessage(PREFIX + ChatColor.GRAY
+                    + "This build reaches server internals by reflection; see the console for details.");
+        }
+    }
+
+    private void stop(CommandSender sender) {
+        if (!manager.isOnline()) {
+            sender.sendMessage(PREFIX + ChatColor.YELLOW + manager.name() + " is not online.");
+            return;
+        }
+
+        String failure = manager.stop();
+        if (failure == null) {
+            sender.sendMessage(PREFIX + ChatColor.GREEN + manager.name() + " left. "
+                    + ChatColor.WHITE + "Players online: " + Bukkit.getOnlinePlayers().size() + ".");
+        } else {
+            sender.sendMessage(PREFIX + ChatColor.RED + "Could not stop cleanly: " + failure);
+        }
     }
 
     @Override

@@ -6,6 +6,7 @@ run/
 *.log
 
 # IDE
+.claude/
 .idea/
 *.iml
 *.ipr
