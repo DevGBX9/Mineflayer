@@ -1,0 +1,6 @@
+name: ${mod_name}
+version: ${version}
+main: com.devgbx9.mineflayer.paper.MineflayerPaper
+description: ${mod_description}
+author: ${mod_author}
+api-version: '${paper_api_version_short}'

@@ -1,0 +1,46 @@
+plugins {
+    id 'java-library'
+}
+
+base {
+    archivesName = "${project.mod_id}-paper"
+}
+
+configurations {
+    // Everything in `shade` is compiled against and bundled into the final jar.
+    shade
+    implementation.extendsFrom shade
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:${project.paper_api_version}"
+
+    shade project(':common')
+}
+
+processResources {
+    def props = [
+        mod_id                 : project.mod_id,
+        mod_name               : project.mod_name,
+        mod_description        : project.mod_description,
+        mod_author             : project.mod_author,
+        version                : project.version,
+        paper_api_version_short: project.paper_api_version_short
+    ]
+
+    props.each { k, v -> inputs.property(k, v) }
+
+    filesMatching('plugin.yml') {
+        expand(props)
+    }
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from {
+        configurations.shade.collect { it.isDirectory() ? it : zipTree(it) }
+    } {
+        exclude 'META-INF/MANIFEST.MF'
+    }
+}

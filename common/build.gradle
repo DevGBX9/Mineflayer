@@ -1,0 +1,12 @@
+plugins {
+    id 'java-library'
+}
+
+base {
+    archivesName = "${project.mod_id}-common"
+}
+
+dependencies {
+    // Platform-agnostic dependencies only.
+    // Nothing here may reference Minecraft, Fabric or Bukkit APIs.
+}

@@ -1,0 +1,53 @@
+plugins {
+    id 'fabric-loom'
+}
+
+base {
+    archivesName = "${project.mod_id}-fabric"
+}
+
+configurations {
+    // Everything in `shade` is compiled against and bundled into the final jar.
+    shade
+    implementation.extendsFrom shade
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+    shade project(':common')
+}
+
+processResources {
+    def props = [
+        mod_id           : project.mod_id,
+        mod_name         : project.mod_name,
+        mod_description  : project.mod_description,
+        mod_author       : project.mod_author,
+        version          : project.version,
+        minecraft_version: project.minecraft_version,
+        loader_version   : project.loader_version
+    ]
+
+    props.each { k, v -> inputs.property(k, v) }
+
+    filesMatching('fabric.mod.json') {
+        expand(props)
+    }
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from {
+        configurations.shade.collect { it.isDirectory() ? it : zipTree(it) }
+    } {
+        exclude 'META-INF/MANIFEST.MF'
+    }
+
+    from(rootProject.file('ico.png')) {
+        rename { 'icon.png' }
+    }
+}
