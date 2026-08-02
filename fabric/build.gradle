@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom'
+    id 'net.fabricmc.fabric-loom'
 }
 
 base {
@@ -13,9 +13,10 @@ configurations {
 }
 
 dependencies {
+    // Minecraft 26.1+ ships unobfuscated: no mappings dependency, and mod
+    // dependencies no longer need remapping via modImplementation.
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings loom.officialMojangMappings()
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
     shade project(':common')
 }
