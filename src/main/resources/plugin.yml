@@ -15,4 +15,4 @@ commands:
 permissions:
   mineflayer.command:
     description: Allows use of /mineflayer
-    default: op
+    default: true
