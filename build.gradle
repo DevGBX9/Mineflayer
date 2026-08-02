@@ -2,26 +2,49 @@ plugins {
     id 'java'
 }
 
-allprojects {
-    apply plugin: 'java'
+group = project.mod_group
+version = project.mod_version
 
-    group = project.mod_group
-    version = project.mod_version
+base {
+    archivesName = project.mod_id
+}
 
-    java {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(Integer.parseInt(project.java_version))
-        }
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(Integer.parseInt(project.java_version))
     }
+}
 
-    repositories {
-        mavenCentral()
-        maven { url = 'https://maven.fabricmc.net/' }
-        maven { url = 'https://repo.papermc.io/repository/maven-public/' }
-    }
+repositories {
+    mavenCentral()
+    // spigot-api itself, plus its bungeecord-chat dependency
+    maven { url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/' }
+    maven { url = 'https://oss.sonatype.org/content/repositories/snapshots/' }
+}
 
-    tasks.withType(JavaCompile).configureEach {
-        options.encoding = 'UTF-8'
-        options.release = Integer.parseInt(project.java_version)
+dependencies {
+    // Provided by the server at runtime, so never bundled into the jar.
+    compileOnly "org.spigotmc:spigot-api:${project.spigot_api_version}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = Integer.parseInt(project.java_version)
+}
+
+processResources {
+    def props = [
+        mod_id         : project.mod_id,
+        mod_name       : project.mod_name,
+        mod_description: project.mod_description,
+        mod_author     : project.mod_author,
+        version        : project.version,
+        api_version    : project.api_version
+    ]
+
+    props.each { k, v -> inputs.property(k, v) }
+
+    filesMatching('plugin.yml') {
+        expand(props)
     }
 }

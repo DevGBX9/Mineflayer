@@ -32,24 +32,14 @@ jobs:
         with:
           gradle-version: '9.5.1'
 
-      - name: Build both platforms
+      - name: Build
         run: gradle build --no-daemon --stacktrace
 
-      - name: Upload Fabric mod
+      - name: Upload plugin
         uses: actions/upload-artifact@v4
         with:
-          name: Mineflayer-Fabric
+          name: Mineflayer
           if-no-files-found: error
           path: |
-            fabric/build/libs/*.jar
-            !fabric/build/libs/*-dev.jar
-            !fabric/build/libs/*-sources.jar
-
-      - name: Upload Paper plugin
-        uses: actions/upload-artifact@v4
-        with:
-          name: Mineflayer-Paper
-          if-no-files-found: error
-          path: |
-            paper/build/libs/*.jar
-            !paper/build/libs/*-sources.jar
+            build/libs/*.jar
+            !build/libs/*-sources.jar
