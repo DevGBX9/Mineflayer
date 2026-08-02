@@ -66,13 +66,56 @@ final class NmsReflect {
                 "no field of type " + type.getName() + " on " + owner.getName());
     }
 
-    /** Writes a field, ignoring failures so cleanup paths never cascade. */
+    /**
+     * Like {@link #field} but returns {@code null} instead of throwing.
+     *
+     * <p>For members that are wanted where present and skippable where not, so a
+     * field that disappears in a later drop degrades one protection rather than
+     * failing the whole plugin.
+     */
+    static Field fieldOrNull(Class<?> owner, String name) {
+        try {
+            return field(owner, name);
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
+    }
+
+    /** Like {@link #method} but returns {@code null} instead of throwing. */
+    static Method methodOrNull(Class<?> owner, String name, Object... args) {
+        try {
+            return method(owner, name, args);
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Writes a field, ignoring failures so cleanup paths never cascade. A
+     * {@code null} field is skipped, which is what makes {@link #fieldOrNull}
+     * results usable without a check at every call site.
+     */
     static void setQuietly(Object target, Field field, Object value) {
+        if (field == null) {
+            return;
+        }
         try {
             field.set(target, value);
         } catch (ReflectiveOperationException | RuntimeException ignored) {
             // Best effort only: a type mismatch here must not escape into the
             // repeating task that calls it.
+        }
+    }
+
+    /** Invokes a method, ignoring failures. A {@code null} method is skipped. */
+    static void invokeQuietly(Method method, Object target, Object... args) {
+        if (method == null) {
+            return;
+        }
+        try {
+            method.invoke(target, args);
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            // Same contract as setQuietly: never escape into the caller's timer.
         }
     }
 

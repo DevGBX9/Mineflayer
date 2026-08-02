@@ -22,6 +22,11 @@ public class Mineflayer extends JavaPlugin {
 
         command.setExecutor(handler);
         command.setTabCompleter(handler);
+
+        // Refuses kicks aimed at the fake player, including ones from other
+        // plugins. Registered even before it is started: it keys off the manager's
+        // own protection flag, so it does nothing until there is a player to guard.
+        getServer().getPluginManager().registerEvents(new FakePlayerGuard(fakePlayer), this);
     }
 
     @Override

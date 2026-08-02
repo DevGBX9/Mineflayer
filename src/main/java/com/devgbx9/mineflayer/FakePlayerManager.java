@@ -35,6 +35,26 @@ import org.bukkit.scheduler.BukkitTask;
  *       answers, so the keepalive state is reset on the same timer.</li>
  * </ul>
  *
+ * <p>Staying online takes three layers, because the server has more than one way
+ * to remove a player and no single layer covers them all:
+ * <ol>
+ *   <li><b>Prevention.</b> Every server-side watchdog that ends in a disconnect is
+ *       reset twice a second in {@link #harden}: the keepalive timeout, the
+ *       client-load timeout, the idle timeout and the flying checks. A watchdog
+ *       that never reaches its limit never kicks.</li>
+ *   <li><b>Blocking.</b> {@link FakePlayerGuard} cancels {@code PlayerKickEvent},
+ *       which is what {@code /kick}, other plugins and anti-cheat all go
+ *       through.</li>
+ *   <li><b>Recovery.</b> Anything that still manages to remove the player - an
+ *       NMS-level disconnect that skips the Bukkit event entirely - is undone by
+ *       the same timer, which notices the player is gone and registers it again.
+ *       This is the layer that makes the guarantee hold without having to
+ *       enumerate every removal path in advance.</li>
+ * </ol>
+ *
+ * <p>All three stand down the moment {@link #stop} runs, which is the only way
+ * the player is meant to leave.
+ *
  * <p>Every server type is reached by reflection rather than a compile-time NMS
  * dependency, which is what keeps a single jar loadable on Bukkit, Spigot, Paper
  * and forks across both the 26.1.x and 26.2.x series. The tradeoff is real:
@@ -47,12 +67,41 @@ public final class FakePlayerManager {
     /** Fixed so the same fake player identity is reused across restarts. */
     private static final UUID ID = UUID.nameUUIDFromBytes("Mineflayer:monitor".getBytes());
 
+    /** Reported as the connection latency, plausibly low and steady. */
+    private static final int FAKE_LATENCY_MS = 8;
+
+    /**
+     * How many failed re-registrations before the watchdog stops trying. Without a
+     * cap, a server that rejects the join would be retried twice a second forever,
+     * filling the log.
+     */
+    private static final int MAX_REVIVE_FAILURES = 5;
+
     private final Plugin plugin;
 
     private Object serverPlayer;
     private Object connection;
     private Object channel;
     private BukkitTask upkeep;
+    /** False only while {@link #stop} runs, so the guard lets that removal through. */
+    private volatile boolean protect;
+
+    // Watchdog members, resolved once at join. Null means "not present in this
+    // server build"; see harden().
+    private Object listener;
+    private Field keepAlivePending;
+    private Field keepAliveTime;
+    private Field closed;
+    private Field closedListenerTime;
+    private Field latency;
+    private Field clientLoadedTimeoutTimer;
+    private Field aboveGroundTickCount;
+    private Field aboveGroundVehicleTickCount;
+    private Field clientIsFloating;
+    private Field clientVehicleIsFloating;
+    private Method resetLastActionTime;
+    /** Consecutive failed revives; reset by a successful one. */
+    private int reviveFailures;
 
     public FakePlayerManager(Plugin plugin) {
         this.plugin = plugin;
@@ -64,6 +113,32 @@ public final class FakePlayerManager {
 
     public String name() {
         return NAME;
+    }
+
+    /**
+     * Whether kicks aimed at {@code uuid} should be refused.
+     *
+     * <p>Read by {@link FakePlayerGuard} on the main thread; {@code volatile}
+     * because {@link #stop} may clear it from a command thread.
+     */
+    public boolean isProtected(UUID uuid) {
+        return protect && ID.equals(uuid);
+    }
+
+    /**
+     * Called by {@link FakePlayerGuard} when the fake player left anyway.
+     *
+     * <p>Clears the stale references so the next upkeep pass sees a player that
+     * needs re-registering, and resets the failure count: this is a fresh removal,
+     * not a continuation of an earlier failed attempt.
+     */
+    void notifyRemoved() {
+        if (!protect) {
+            return;
+        }
+        this.serverPlayer = null;
+        this.listener = null;
+        this.reviveFailures = 0;
     }
 
     /**
@@ -138,7 +213,83 @@ public final class FakePlayerManager {
             bukkitPlayer.setGameMode(GameMode.SPECTATOR);
         }
 
+        cacheGuards();
+        harden();
+        protect = true;
         startUpkeep();
+    }
+
+    /**
+     * Resolves the watchdog members once, at join time.
+     *
+     * <p>{@link #harden} runs twice a second, and every lookup here walks a class
+     * hierarchy, so resolving them per run would be paying that cost forever.
+     * Each one is optional: a member that a future drop renames costs one
+     * protection instead of the whole plugin.
+     */
+    private void cacheGuards() throws ReflectiveOperationException {
+        Object listener = NmsReflect.field(serverPlayer.getClass(), "connection").get(serverPlayer);
+        if (listener == null) {
+            throw new ReflectiveOperationException("the joined player has no packet listener");
+        }
+        this.listener = listener;
+
+        Class<?> c = listener.getClass();
+        // Declared on ServerCommonPacketListenerImpl; the keepalive timeout.
+        this.keepAlivePending = NmsReflect.fieldOrNull(c, "keepAlivePending");
+        this.keepAliveTime = NmsReflect.fieldOrNull(c, "keepAliveTime");
+        // The 'unexpected query' timeout, armed once the listener is marked closed.
+        this.closed = NmsReflect.fieldOrNull(c, "closed");
+        this.closedListenerTime = NmsReflect.fieldOrNull(c, "closedListenerTime");
+        // A latency of exactly zero is the clearest tell that nothing is really
+        // connected, and it also decides whether a keepalive is sent at all.
+        this.latency = NmsReflect.fieldOrNull(c, "latency");
+        // Declared on ServerGamePacketListenerImpl: kicks a client that never
+        // reports itself loaded, which a fake player never does.
+        this.clientLoadedTimeoutTimer = NmsReflect.fieldOrNull(c, "clientLoadedTimeoutTimer");
+        // The flying checks. Spectator already skips them, but a plugin can change
+        // the game mode, so the counters are held down regardless.
+        this.aboveGroundTickCount = NmsReflect.fieldOrNull(c, "aboveGroundTickCount");
+        this.aboveGroundVehicleTickCount = NmsReflect.fieldOrNull(c, "aboveGroundVehicleTickCount");
+        this.clientIsFloating = NmsReflect.fieldOrNull(c, "clientIsFloating");
+        this.clientVehicleIsFloating = NmsReflect.fieldOrNull(c, "clientVehicleIsFloating");
+        // The idle timeout compares against this, and player-idle-timeout is a
+        // plain server.properties setting, so it cannot be assumed to be off.
+        this.resetLastActionTime =
+                NmsReflect.methodOrNull(serverPlayer.getClass(), "resetLastActionTime");
+    }
+
+    /**
+     * Resets every server-side watchdog that ends in a disconnect.
+     *
+     * <p>These are the kicks no event can intercept, because the server issues
+     * them against the connection directly. A counter that is put back to its
+     * starting value twice a second never reaches a limit measured in seconds.
+     */
+    private void harden() {
+        if (listener == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+
+        NmsReflect.setQuietly(listener, keepAlivePending, Boolean.FALSE);
+        NmsReflect.setQuietly(listener, keepAliveTime, now);
+
+        NmsReflect.setQuietly(listener, closed, Boolean.FALSE);
+        NmsReflect.setQuietly(listener, closedListenerTime, 0L);
+
+        // Steady and plausible rather than random: a ping that jitters every half
+        // second is itself unusual.
+        NmsReflect.setQuietly(listener, latency, FAKE_LATENCY_MS);
+
+        NmsReflect.setQuietly(listener, clientLoadedTimeoutTimer, 0);
+
+        NmsReflect.setQuietly(listener, aboveGroundTickCount, 0);
+        NmsReflect.setQuietly(listener, aboveGroundVehicleTickCount, 0);
+        NmsReflect.setQuietly(listener, clientIsFloating, Boolean.FALSE);
+        NmsReflect.setQuietly(listener, clientVehicleIsFloating, Boolean.FALSE);
+
+        NmsReflect.invokeQuietly(resetLastActionTime, serverPlayer);
     }
 
     /** Builds a {@code Connection} whose channel is open but discards traffic. */
@@ -176,15 +327,32 @@ public final class FakePlayerManager {
         return conn;
     }
 
-    /** Drains queued packets and keeps the keepalive watchdog from kicking. */
+    /**
+     * Drains queued packets, holds the watchdogs down and puts the player back if
+     * something removed it.
+     *
+     * <p>Runs every 10 ticks. The watchdogs it resets are measured in seconds, so
+     * twice a second is far inside every limit, and the work is a handful of
+     * pre-resolved field writes.
+     */
     private void startUpkeep() {
+        // A revive re-enters spawn() from inside this very task, so without this
+        // the old timer would keep running alongside the new one.
+        if (upkeep != null) {
+            upkeep.cancel();
+        }
         upkeep = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            if (!isOnline()) {
+            if (!protect) {
                 return;
             }
-            releaseOutbound();
-            resetKeepAlive();
-        }, 20L, 20L);
+            // Keyed off protect rather than isOnline(): a revive that fails leaves
+            // no player behind, and this task is what retries it.
+            if (isOnline()) {
+                releaseOutbound();
+                harden();
+            }
+            reviveIfRemoved();
+        }, 10L, 10L);
     }
 
     private void releaseOutbound() {
@@ -200,23 +368,47 @@ public final class FakePlayerManager {
     }
 
     /**
-     * Clears the pending keepalive so the timeout check never trips. A real client
-     * would answer the ping; this one cannot, and an unanswered ping is a kick.
+     * Registers the player again if it left the online list.
+     *
+     * <p>The watchdog resets above cover the timeouts and {@link FakePlayerGuard}
+     * covers everything that fires {@code PlayerKickEvent}, but a plugin can also
+     * reach past both and close the connection through NMS, where no event exists
+     * to cancel. Rather than trying to name every such path, this notices the
+     * outcome - the player is no longer online - and joins it back.
+     *
+     * <p>Only while {@link #protect} holds, so {@code stop} is not fought.
      */
-    private void resetKeepAlive() {
+    private void reviveIfRemoved() {
+        if (!protect || Bukkit.getPlayer(ID) != null) {
+            return;
+        }
+        if (reviveFailures >= MAX_REVIVE_FAILURES) {
+            return;
+        }
+
+        plugin.getLogger().info("The fake player was removed; registering it again.");
+        // Drop the dead connection first: spawn() builds a fresh one, and the old
+        // channel is what a kick would have closed.
+        discardConnection();
+        serverPlayer = null;
+        listener = null;
+
         try {
-            Object listener = NmsReflect.field(serverPlayer.getClass(), "connection")
-                    .get(serverPlayer);
-            if (listener == null) {
-                return;
+            spawn();
+            reviveFailures = 0;
+        } catch (Throwable t) {
+            reviveFailures++;
+            serverPlayer = null;
+            connection = null;
+            listener = null;
+            if (reviveFailures >= MAX_REVIVE_FAILURES) {
+                plugin.getLogger().log(Level.SEVERE,
+                        "Giving up on re-registering the fake player after "
+                                + MAX_REVIVE_FAILURES + " attempts", t);
+            } else {
+                plugin.getLogger().log(Level.WARNING,
+                        "Could not re-register the fake player; retrying", t);
             }
-            Class<?> common = listener.getClass();
-            NmsReflect.setQuietly(listener,
-                    NmsReflect.field(common, "keepAlivePending"), Boolean.FALSE);
-            NmsReflect.setQuietly(listener,
-                    NmsReflect.field(common, "keepAliveTime"), System.currentTimeMillis());
-        } catch (ReflectiveOperationException e) {
-            plugin.getLogger().log(Level.FINE, "Could not refresh the keepalive state", e);
         }
     }
 
@@ -226,6 +418,10 @@ public final class FakePlayerManager {
      * @return {@code null} on success, otherwise a message describing what failed
      */
     public String stop() {
+        // Lowered first: everything below is a removal, and the guard and the
+        // revive watchdog both exist to undo removals.
+        protect = false;
+
         if (upkeep != null) {
             upkeep.cancel();
             upkeep = null;
@@ -236,6 +432,8 @@ public final class FakePlayerManager {
         // blocks a later start.
         this.serverPlayer = null;
         this.connection = null;
+        this.listener = null;
+        this.reviveFailures = 0;
 
         String failure = null;
         if (player != null) {
@@ -255,16 +453,22 @@ public final class FakePlayerManager {
             }
         }
 
-        if (channel != null) {
-            try {
-                NmsReflect.method(channel.getClass(), "close").invoke(channel);
-            } catch (ReflectiveOperationException ignored) {
-                // Nothing depends on the channel after this point.
-            }
-            channel = null;
-        }
-
+        discardConnection();
         return failure;
+    }
+
+    /** Closes the fake channel and forgets it. */
+    private void discardConnection() {
+        if (channel == null) {
+            return;
+        }
+        try {
+            NmsReflect.method(channel.getClass(), "close").invoke(channel);
+        } catch (ReflectiveOperationException ignored) {
+            // Nothing depends on the channel after this point.
+        }
+        channel = null;
+        connection = null;
     }
 
     /** Last resort: drop the player straight out of the player list collections. */
