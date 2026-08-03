@@ -7,8 +7,10 @@
 # which is exactly why nothing has to be installed on it.
 remote:
 
-  # The name the bot logs in with on the target server.
-  username: MineflayerBot
+  # The name the bot logs in with on the target server. Kept the same as the
+  # local fake player's name so the bot is one recognisable identity wherever
+  # it is, whether it is sitting on this server or on another one.
+  username: Mineflayer
 
   # --- Offline targets (online-mode=false) ---
   #

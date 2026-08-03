@@ -16,13 +16,16 @@ import com.devgbx9.mineflayer.FakePlayerManager;
  * {@link RemoteBotConnection}; this class is what decides when a new one is
  * opened, when a lost one is retried, and when the whole thing is done.
  *
- * <p>Reconnects back off, doubling from a second up to a ceiling, and never stop
- * while the bot is meant to be running. Giving up was considered and rejected:
- * the reasons a target refuses a login are overwhelmingly temporary - the server
- * is restarting, asleep, or full - and a bot that abandoned the target ten
- * minutes ago looks exactly like one that was never started. The ceiling is what
- * keeps an unreachable target from filling the log, and repeated failures are
- * logged at a widening interval rather than on every attempt.
+ * <p>A bot that was settled on the target and then lost its link - kicked,
+ * restarted, dropped - reconnects with no wait at all, because the point of the
+ * feature is that it is back before anyone notices. Everything else backs off:
+ * doubling from a second up to a ceiling, and never stopping while the bot is
+ * meant to be running. Giving up was considered and rejected: the reasons a
+ * target refuses a login are overwhelmingly temporary - the server is
+ * restarting, asleep, or full - and a bot that abandoned the target ten minutes
+ * ago looks exactly like one that was never started. The ceiling is what keeps
+ * an unreachable target from filling the log, and repeated failures are logged
+ * at a widening interval rather than on every attempt.
  *
  * <p>All networking runs on this class's own thread. Nothing here touches the
  * Bukkit API from that thread except through {@link #post}, because the server
@@ -36,6 +39,20 @@ public final class RemoteBotManager {
 
     /** Failures between log lines once the backoff has reached its ceiling. */
     private static final int QUIET_LOG_INTERVAL = 20;
+
+    /**
+     * How long a session must have lasted for its loss to be reconnected to
+     * immediately.
+     *
+     * <p>A bot that played for a while and then went is one the target removed -
+     * a kick, a restart, a dropped link - and the point of this feature is that it
+     * is back before anyone notices. But a target that kicks on sight also
+     * reaches the play phase, for a second, and treating that as "was playing"
+     * would reconnect with no wait, forever, as fast as the network allows. Ten
+     * seconds separates the two without a false negative that matters: a real
+     * session that ends inside ten seconds waits one second instead of none.
+     */
+    private static final long GENUINE_SESSION_MS = 10_000;
 
     private final Plugin plugin;
     /** Used for the handoff: the local fake player steps aside while the bot is away. */
@@ -204,6 +221,10 @@ public final class RemoteBotManager {
             boolean relayChat) {
         long retryDelay = FIRST_RETRY_MS;
         int failures = 0;
+        // The wait before the next attempt, decided by how the last one went.
+        // Zero here because the first attempt is the command the user just ran,
+        // and that should not sit waiting for a backoff nothing has earned yet.
+        long nextDelay = 0;
 
         while (isRunning()) {
             RemoteBotConnection c = new RemoteBotConnection(
@@ -225,16 +246,23 @@ public final class RemoteBotManager {
                 post("the connection to " + host + ":" + port + " closed; reconnecting.");
                 retryDelay = FIRST_RETRY_MS;
                 failures = 0;
+                // Removed from a server it had settled on: back at once, which is
+                // the whole point. A link that never got in, or that lasted only
+                // moments, waits its turn.
+                nextDelay = heldASession(c) ? 0 : retryDelay;
             } catch (Exception e) {
                 if (!isRunning()) {
                     return;
                 }
                 failures++;
-                if (c.isInPlay()) {
+                if (heldASession(c)) {
                     // It was connected and working, so this is a fresh problem
                     // rather than a target that keeps refusing.
                     failures = 1;
                     retryDelay = FIRST_RETRY_MS;
+                    nextDelay = 0;
+                } else {
+                    nextDelay = retryDelay;
                 }
                 // Every attempt is reported until the backoff reaches its
                 // ceiling, then one in twenty: past that point the message stops
@@ -253,11 +281,28 @@ public final class RemoteBotManager {
                 }
             }
 
-            if (!sleepBetweenAttempts(retryDelay)) {
+            if (!sleepBetweenAttempts(nextDelay)) {
                 return;
             }
-            retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+            // Only a waited-out attempt widens the window. An immediate retry
+            // after a kick must not, or a target that kicks on sight would walk
+            // the delay up without a single real wait in between.
+            if (nextDelay > 0) {
+                retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+            }
+            nextDelay = retryDelay;
         }
+    }
+
+    /**
+     * Whether the attempt amounted to a real stay on the target, as opposed to
+     * never getting in or being turned round on arrival.
+     *
+     * <p>This is the one distinction the retry timing turns on: a lost session
+     * is reconnected to with no wait, anything else backs off.
+     */
+    private static boolean heldASession(RemoteBotConnection c) {
+        return c.playedForMillis() >= GENUINE_SESSION_MS;
     }
 
     /**
@@ -309,8 +354,13 @@ public final class RemoteBotManager {
         FileConfiguration config = plugin.getConfig();
         String name = config.getString("remote.username", "").trim();
         if (name.isEmpty()) {
-            plugin.getLogger().severe("remote.username is not set in config.yml");
-            return null;
+            // Falls back rather than failing: the bot and the local fake player
+            // are meant to be one identity, so the local name is the right
+            // default, and a config.yml written before this key existed should
+            // not stop the bot from starting.
+            name = localPlayer.name();
+            plugin.getLogger().info(
+                    "remote.username is not set in config.yml; using '" + name + "'");
         }
 
         String token = config.getString("remote.access-token", "").trim();

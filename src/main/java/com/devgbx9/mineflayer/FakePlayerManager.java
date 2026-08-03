@@ -44,10 +44,12 @@ import org.bukkit.scheduler.BukkitTask;
  *       that never reaches its limit never kicks.</li>
  *   <li><b>Blocking.</b> {@link FakePlayerGuard} cancels {@code PlayerKickEvent},
  *       which is what {@code /kick}, other plugins and anti-cheat all go
- *       through.</li>
+ *       through, along with the events that interfere without removing -
+ *       damage, teleports, game-mode changes - and any command naming the
+ *       player except this plugin's own.</li>
  *   <li><b>Recovery.</b> Anything that still manages to remove the player - an
- *       NMS-level disconnect that skips the Bukkit event entirely - is undone by
- *       the same timer, which notices the player is gone and registers it again.
+ *       NMS-level disconnect that skips the Bukkit event entirely - is undone on
+ *       the very next tick, and by the upkeep timer if the quit was silent.
  *       This is the layer that makes the guarantee hold without having to
  *       enumerate every removal path in advance.</li>
  * </ol>
@@ -147,9 +149,16 @@ public final class FakePlayerManager {
     /**
      * Called by {@link FakePlayerGuard} when the fake player left anyway.
      *
-     * <p>Clears the stale references so the next upkeep pass sees a player that
-     * needs re-registering, and resets the failure count: this is a fresh removal,
-     * not a continuation of an earlier failed attempt.
+     * <p>Clears the stale references so the revive sees a player that needs
+     * re-registering, resets the failure count - this is a fresh removal, not a
+     * continuation of an earlier failed attempt - and schedules the rejoin for
+     * the very next tick.
+     *
+     * <p>The rejoin is not done inline. This runs inside {@code PlayerQuitEvent},
+     * where the server is still walking its own removal, and registering a player
+     * in the middle of that would fight it. One tick later the removal is
+     * complete and the join is clean - and one tick is as fast as re-entry can
+     * safely be, rather than waiting for the next upkeep pass.
      */
     void notifyRemoved() {
         if (!protect) {
@@ -159,9 +168,16 @@ public final class FakePlayerManager {
         this.listener = null;
         this.reviveFailures = 0;
         // Clears the backoff as well as the count: this removal is new, so the
-        // next pass should act on it immediately rather than serve out a wait
+        // next attempt should act on it immediately rather than serve out a wait
         // that an earlier, unrelated failure imposed.
         this.reviveWaitPasses = 0;
+
+        // Not scheduled during a shutdown: the scheduler rejects tasks from a
+        // plugin that is being disabled, and a quit fired by that shutdown is
+        // exactly when this would be called.
+        if (plugin.isEnabled()) {
+            Bukkit.getScheduler().runTask(plugin, this::reviveIfRemoved);
+        }
     }
 
     /**
@@ -229,17 +245,42 @@ public final class FakePlayerManager {
                     "the server accepted the join but the player is not listed as online");
         }
 
-        // Spectator leaves it with no solid body and nothing to interact with.
-        // Done through the Bukkit API rather than NMS: it is stable across forks.
-        Player bukkitPlayer = Bukkit.getPlayer(ID);
-        if (bukkitPlayer != null) {
-            bukkitPlayer.setGameMode(GameMode.SPECTATOR);
-        }
+        makeBodiless();
 
         cacheGuards();
         harden();
         protect = true;
         startUpkeep();
+    }
+
+    /**
+     * Leaves the player with a presence in the player list and nothing else.
+     *
+     * <p>Spectator does most of this on its own - no collision, no interaction,
+     * no damage - and is set through the Bukkit API rather than NMS because that
+     * is stable across forks. The two flags after it are belt and braces for the
+     * window where something has changed the game mode and
+     * {@link FakePlayerGuard} has not yet changed it back: they hold on their own,
+     * whatever mode the player is in.
+     */
+    private void makeBodiless() {
+        Player bukkitPlayer = Bukkit.getPlayer(ID);
+        if (bukkitPlayer == null) {
+            return;
+        }
+        // Each of these is checked before it is written, because this runs twice a
+        // second and setGameMode fires an event: setting it unconditionally would
+        // put a stream of no-op game-mode changes through every other plugin's
+        // listeners for as long as the fake player is online.
+        if (bukkitPlayer.getGameMode() != GameMode.SPECTATOR) {
+            bukkitPlayer.setGameMode(GameMode.SPECTATOR);
+        }
+        if (!bukkitPlayer.isInvulnerable()) {
+            bukkitPlayer.setInvulnerable(true);
+        }
+        if (bukkitPlayer.isCollidable()) {
+            bukkitPlayer.setCollidable(false);
+        }
     }
 
     /**
@@ -373,6 +414,7 @@ public final class FakePlayerManager {
             if (isOnline()) {
                 releaseOutbound();
                 harden();
+                makeBodiless();
             }
             reviveIfRemoved();
         }, 10L, 10L);

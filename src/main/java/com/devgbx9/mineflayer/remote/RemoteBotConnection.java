@@ -135,6 +135,18 @@ final class RemoteBotConnection {
     private volatile boolean inPlay;
 
     /**
+     * When the play phase was entered, or zero if it never was.
+     *
+     * <p>{@link #inPlay} answers "is it in the game now", which is false by the
+     * time the connection has ended - exactly when the manager needs to know how
+     * this attempt went. A session that lasted and then ended is a bot the target
+     * removed, and it should come straight back; one that ended seconds after
+     * joining is a target refusing in a slower way, and hammering it helps
+     * nobody. The length is what tells those apart.
+     */
+    private volatile long playStartedAt;
+
+    /**
      * Sends the periodic client traffic while the bot is in play.
      *
      * <p>Separate from the reader thread because it has to send on a schedule of
@@ -155,6 +167,18 @@ final class RemoteBotConnection {
 
     boolean isInPlay() {
         return inPlay;
+    }
+
+    /**
+     * How long the bot spent in the play phase, in milliseconds, or zero if it
+     * never got there.
+     *
+     * <p>Measured to now rather than to the end of the session, because this is
+     * read once the connection is over and nothing advances afterwards.
+     */
+    long playedForMillis() {
+        long start = playStartedAt;
+        return start == 0 ? 0 : System.currentTimeMillis() - start;
     }
 
     /**
@@ -406,6 +430,7 @@ final class RemoteBotConnection {
                 send(FINISH_CONFIGURATION, new byte[0]);
                 phase = PacketIds.Phase.PLAY;
                 inPlay = true;
+                playStartedAt = System.currentTimeMillis();
                 // The server starts a load timer on entering play and disconnects
                 // a client that never reports being ready.
                 sendQuietly(PLAYER_LOADED, new byte[0]);
