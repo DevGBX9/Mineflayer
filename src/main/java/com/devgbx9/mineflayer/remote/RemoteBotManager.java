@@ -131,8 +131,11 @@ public final class RemoteBotManager {
             this.restoreLocalPlayer = false;
 
             boolean relayChat = plugin.getConfig().getBoolean("remote.relay-chat", true);
+            // Read once per start, not per attempt: changing it mid-run would
+            // leave a bot rotating names on one target and not the next.
+            boolean rotate = rotateIdentity(account);
 
-            Thread t = new Thread(() -> connectLoop(host, port, account, ids, relayChat),
+            Thread t = new Thread(() -> connectLoop(host, port, account, ids, relayChat, rotate),
                     "Mineflayer-remote-bot");
             // Daemon so a stuck socket cannot keep the JVM alive past shutdown;
             // onDisable stops it cleanly in the normal case.
@@ -217,8 +220,8 @@ public final class RemoteBotManager {
      *
      * <p>Runs on the worker thread for as long as the bot lives.
      */
-    private void connectLoop(String host, int port, BotAccount account, PacketIds ids,
-            boolean relayChat) {
+    private void connectLoop(String host, int port, BotAccount configured, PacketIds ids,
+            boolean relayChat, boolean rotate) {
         long retryDelay = FIRST_RETRY_MS;
         int failures = 0;
         // The wait before the next attempt, decided by how the last one went.
@@ -227,6 +230,13 @@ public final class RemoteBotManager {
         long nextDelay = 0;
 
         while (isRunning()) {
+            // A new identity per attempt when asked for, so a name that was
+            // refused is never presented twice.
+            BotAccount account = rotate ? BotAccount.randomOffline() : configured;
+            if (rotate) {
+                post("connecting to " + host + ":" + port + " as " + account.name() + ".");
+            }
+
             RemoteBotConnection c = new RemoteBotConnection(
                     host, port, account, ids, relayChat, this::post, this::onJoined);
             synchronized (lock) {
@@ -346,6 +356,28 @@ public final class RemoteBotManager {
     }
 
     /**
+     * Whether this run should present a new identity on every attempt.
+     *
+     * <p>Refused for a premium account regardless of the setting. A token
+     * authenticates the one name it belongs to, so a rotated name would be
+     * rejected by Mojang on every attempt - the bot would simply never join, and
+     * the reason would be buried in a session error. Better to say so once, here,
+     * and keep the configured identity.
+     */
+    private boolean rotateIdentity(BotAccount account) {
+        if (!plugin.getConfig().getBoolean("remote.random-identity", false)) {
+            return false;
+        }
+        if (account.isPremium()) {
+            plugin.getLogger().warning(
+                    "remote.random-identity is on, but a premium account can only log in "
+                            + "under its own name; using " + account.name() + " instead");
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Reads the bot's account out of {@code config.yml}.
      *
      * @return the account, or {@code null} if the configuration is unusable
@@ -357,8 +389,10 @@ public final class RemoteBotManager {
             // Falls back rather than failing: the bot and the local fake player
             // are meant to be one identity, so the local name is the right
             // default, and a config.yml written before this key existed should
-            // not stop the bot from starting.
-            name = localPlayer.name();
+            // not stop the bot from starting. The fixed name rather than the
+            // live one, because a local player that rotates its identity would
+            // otherwise lend the bot one arbitrary generated name for the run.
+            name = FakePlayerManager.defaultName();
             plugin.getLogger().info(
                     "remote.username is not set in config.yml; using '" + name + "'");
         }

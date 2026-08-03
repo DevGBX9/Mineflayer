@@ -3,6 +3,8 @@ package com.devgbx9.mineflayer.remote;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
+import com.devgbx9.mineflayer.RandomIdentity;
+
 /**
  * Who the bot logs in as, and how it proves it.
  *
@@ -38,6 +40,23 @@ record BotAccount(String name, UUID uuid, String accessToken) {
         UUID uuid = UUID.nameUUIDFromBytes(
                 (OFFLINE_PREFIX + name).getBytes(StandardCharsets.UTF_8));
         return new BotAccount(name, uuid, null);
+    }
+
+    /**
+     * A fresh offline account with a name and uuid seen nowhere before.
+     *
+     * <p>The uuid is random rather than derived from the name, so the target has
+     * nothing tying this login to the last one.
+     *
+     * <p>This is a different bargain from {@link #offline}, not a better one.
+     * Every join is a stranger: no inventory, no position, no permission and no
+     * whitelist entry carries over, and a target that lists its players sees the
+     * count climb with names that never repeat. It only applies where the target
+     * runs {@code online-mode=false}; a premium login is the account it is, and
+     * nothing here can change that.
+     */
+    static BotAccount randomOffline() {
+        return new BotAccount(RandomIdentity.name(), UUID.randomUUID(), null);
     }
 
     /** A premium account, authenticated against Mojang with {@code accessToken}. */

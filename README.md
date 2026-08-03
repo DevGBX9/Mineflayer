@@ -92,6 +92,20 @@ git push
 
 الطبقات الثلاث تتوقف فور تنفيذ أمر الإخراج، وهو المخرج الوحيد المقصود.
 
+### هوية جديدة في كل دخول (اختياري)
+
+`fake-player.random-identity: true` يجعل اللاعب يدخل في **كل مرة** باسم عشوائي
+كامل (12 حرفاً) و UUID مختلف — سواء كان الدخول الأول عبر الأمر أو إعادة تسجيل
+تلقائية بعد إزالة.
+
+مطفأ افتراضياً، والسبب صريح: **الحظر لا يمنع اللاعب المحلي أصلاً**. `/ban` يُلغى
+كحدث طرد أولاً، ولو نفذ لأُعيد التسجيل بعده لأن `placeNewPlayer` لا تستشير
+`canPlayerLogin` إطلاقاً. فالخيار موجود لأنه طُلب، لا لأنه يحمي شيئاً لم تحمِه
+الطبقات الثلاث.
+
+والمقابل حقيقي: مع تفعيله يصير كل دخول غريباً — اسم جديد في قائمة اللاعبين، وملف
+جديد في `world/playerdata` لا يُعاد استخدامه، يتراكم على سيرفر يعيد التسجيل كثيراً.
+
 ## البوت البعيد
 
 `/mf m connectto <ip> <port> start` يُدخل بوتاً إلى **سيرفر آخر**، ولا يحتاج ذلك
@@ -178,6 +192,7 @@ git push
 | `remote.access-token` | توكن حساب مايكروسوفت — للأهداف بـ `online-mode=true` فقط |
 | `remote.uuid` | uuid الحساب، مطلوب مع التوكن |
 | `remote.relay-chat` | نقل رسائل الهدف إلى الكونسول |
+| `remote.random-identity` | اسم و UUID جديدان في كل محاولة اتصال — للأهداف بـ `online-mode=false` فقط |
 
 **هدف بـ `online-mode=false`:** اترك `access-token` فارغاً. الاسم يُؤخذ كما هو،
 والـ uuid يُشتق منه بنفس طريقة السيرفر، فيحتفظ البوت بهوية واحدة عبر إعادة الاتصال.
@@ -188,6 +203,22 @@ Mojang لا عنده، فلا شيء في هذا البلوجن يمكن أن ي
 تملكه. التوكنات قصيرة العمر، فإن بدأ الهدف يبلغ برفض الجلسة فالتوكن انتهت صلاحيته.
 
 عامِل `config.yml` كملف سرّي بمجرد وضع توكن فيه.
+
+#### هوية جديدة في كل اتصال (اختياري)
+
+`remote.random-identity: true` يجعل البوت يدخل الهدف في **كل محاولة** — الأولى وكل
+إعادة اتصال — باسم عشوائي كامل و UUID عشوائي، فلا يُقدَّم اسم رُفض مرتين.
+
+مطفأ افتراضياً لأن الهوية الثابتة هي ما يريده معظم الاستخدام: هي ما يحفظ للبوت
+مخزونه وموضعه وصلاحياته ومكانه في القائمة البيضاء عبر إعادة الاتصال. مع التفعيل
+لا ينتقل أيٌّ من ذلك، وكل دخول غريب على الهدف.
+
+**يخصّ الأهداف بـ `online-mode=false` فقط.** الحساب الـ premium لا يدخل إلا بالاسم
+الذي يملكه، فالإعداد يُتجاهل — مع سطر في الكونسول — إن كان هناك توكن.
+
+وبصراحة عن حدوده: يتجاوز حظراً على **الاسم**، ولا يفعل شيئاً تجاه حظر على
+**العنوان**، وهو ما يلجأ إليه الهدف حين يلاحظ أسماءً لا تتكرر. على سيرفر تملكه،
+إضافة اسم ثابت واحد للقائمة البيضاء هو الحل الأصح.
 
 ### البروتوكول
 
@@ -214,6 +245,7 @@ src/main/java/com/devgbx9/mineflayer/MineflayerCommand.java   - الأوامر
 src/main/java/com/devgbx9/mineflayer/FakePlayerManager.java   - اللاعب الوهمي
 src/main/java/com/devgbx9/mineflayer/FakePlayerGuard.java     - حجب الطرد
 src/main/java/com/devgbx9/mineflayer/NmsReflect.java          - أدوات الـ reflection
+src/main/java/com/devgbx9/mineflayer/RandomIdentity.java      - توليد الأسماء العشوائية
 src/main/java/com/devgbx9/mineflayer/remote/RemoteBotManager.java     - دورة حياة البوت
 src/main/java/com/devgbx9/mineflayer/remote/RemoteBotConnection.java  - آلة أطوار البروتوكول
 src/main/java/com/devgbx9/mineflayer/remote/PacketIds.java            - أرقام الحِزم وقت التشغيل
@@ -222,5 +254,5 @@ src/main/java/com/devgbx9/mineflayer/remote/PacketBuf.java            - قراء
 src/main/java/com/devgbx9/mineflayer/remote/MojangAuth.java           - مصادقة premium
 src/main/java/com/devgbx9/mineflayer/remote/BotAccount.java           - هوية البوت
 src/main/resources/plugin.yml                                 - بيانات البلوجن
-src/main/resources/config.yml                                 - إعدادات البوت البعيد
+src/main/resources/config.yml                                 - إعدادات اللاعب الوهمي والبوت البعيد
 ```

@@ -2,6 +2,7 @@ package com.devgbx9.mineflayer;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Map;
 import java.util.UUID;
@@ -65,9 +66,27 @@ import org.bukkit.scheduler.BukkitTask;
  */
 public final class FakePlayerManager {
 
+    /** The name used unless a rotating identity is configured. */
     private static final String NAME = "Mineflayer";
-    /** Fixed so the same fake player identity is reused across restarts. */
-    private static final UUID ID = UUID.nameUUIDFromBytes("Mineflayer:monitor".getBytes());
+
+    /**
+     * The uuid that goes with {@link #NAME}.
+     *
+     * <p>Fixed, so the fake player owns one player entry - and one player-data
+     * file - across restarts rather than leaving a new one behind per start. The
+     * seed is deliberately unchanged from the first release: it is what every
+     * existing install's world folder and permissions are already keyed to, and
+     * a nicer derivation would silently orphan all of it.
+     *
+     * <p>The charset is named rather than left to the platform. The seed is ASCII
+     * so the bytes are the same either way, but a uuid that depends on the default
+     * charset is a uuid that can differ between two servers for no visible reason.
+     */
+    private static final UUID FIXED_ID = UUID.nameUUIDFromBytes(
+            "Mineflayer:monitor".getBytes(StandardCharsets.UTF_8));
+
+    /** Config key: join under a fresh name and uuid every time. */
+    private static final String ROTATE_KEY = "fake-player.random-identity";
 
     /** Reported as the connection latency, plausibly low and steady. */
     private static final int FAKE_LATENCY_MS = 8;
@@ -97,6 +116,20 @@ public final class FakePlayerManager {
     private static final int QUIET_REVIVE_LOG_INTERVAL = 20;
 
     private final Plugin plugin;
+
+    /**
+     * The identity the current join is using.
+     *
+     * <p>Fixed unless {@code fake-player.random-identity} is on, in which case a
+     * new pair is drawn at the start of every join - the command's first one and
+     * every automatic re-registration after it.
+     *
+     * <p>{@code volatile} because {@link FakePlayerGuard} reads the name on the
+     * main thread while a join may be settling it, and because the remote bot
+     * reads it from its own thread when no name of its own is configured.
+     */
+    private volatile String name = NAME;
+    private volatile UUID id = FIXED_ID;
 
     private Object serverPlayer;
     private Object connection;
@@ -132,7 +165,28 @@ public final class FakePlayerManager {
         return serverPlayer != null;
     }
 
+    /**
+     * The name the fake player is currently online under.
+     *
+     * <p>Not a constant: with a rotating identity this changes on every join, and
+     * every caller - the guard's command shield, the remote bot's fallback name -
+     * has to see the name in use now rather than the one it started with.
+     */
     public String name() {
+        return name;
+    }
+
+    /**
+     * The name used when no identity is rotating and nothing overrides it.
+     *
+     * <p>Distinct from {@link #name()} on purpose. A caller that wants to know
+     * what the player is called right now asks {@code name()}; a caller looking
+     * for a sensible default to write down - the remote bot, when
+     * {@code remote.username} is blank - wants this one, because a generated name
+     * borrowed from a rotating local player would be an arbitrary string frozen
+     * for the whole run.
+     */
+    public static String defaultName() {
         return NAME;
     }
 
@@ -143,7 +197,7 @@ public final class FakePlayerManager {
      * because {@link #stop} may clear it from a command thread.
      */
     public boolean isProtected(UUID uuid) {
-        return protect && ID.equals(uuid);
+        return protect && id.equals(uuid);
     }
 
     /**
@@ -205,13 +259,15 @@ public final class FakePlayerManager {
     }
 
     private void spawn() throws ReflectiveOperationException {
+        chooseIdentity();
+
         Object nmsServer = nmsServer();
         Class<?> serverClass = nmsServer.getClass();
 
         Object level = NmsReflect.method(serverClass, "overworld").invoke(nmsServer);
 
         Class<?> profileClass = NmsReflect.clazz("com.mojang.authlib.GameProfile");
-        Object profile = NmsReflect.construct(profileClass, ID, NAME);
+        Object profile = NmsReflect.construct(profileClass, id, name);
 
         Class<?> clientInfoClass = NmsReflect.clazz("net.minecraft.server.level.ClientInformation");
         Object clientInfo = NmsReflect.method(clientInfoClass, "createDefault").invoke(null);
@@ -238,7 +294,7 @@ public final class FakePlayerManager {
         NmsReflect.method(playerList.getClass(), "placeNewPlayer", conn, player, cookie)
                 .invoke(playerList, conn, player, cookie);
 
-        if (Bukkit.getPlayer(ID) == null) {
+        if (Bukkit.getPlayer(id) == null) {
             this.serverPlayer = null;
             this.connection = null;
             throw new ReflectiveOperationException(
@@ -254,6 +310,31 @@ public final class FakePlayerManager {
     }
 
     /**
+     * Settles the name and uuid this join will use.
+     *
+     * <p>With the setting off - the default - this is the same pair every time,
+     * which is what lets the fake player own one player-data file rather than
+     * strewing a new one across the world folder per join.
+     *
+     * <p>With it on, every join is a stranger: a name and uuid seen nowhere
+     * before, tied to nothing that came before it. Read per join rather than
+     * cached so the setting can be changed with a reload and take effect on the
+     * next re-registration.
+     */
+    private void chooseIdentity() {
+        if (!plugin.getConfig().getBoolean(ROTATE_KEY, false)) {
+            this.name = NAME;
+            this.id = FIXED_ID;
+            return;
+        }
+        this.name = RandomIdentity.name();
+        // Random rather than derived from the name: nothing should tie this join
+        // to the last one, and locally no server has to agree with us about it.
+        this.id = UUID.randomUUID();
+        plugin.getLogger().info("The fake player is joining as '" + name + "'.");
+    }
+
+    /**
      * Leaves the player with a presence in the player list and nothing else.
      *
      * <p>Spectator does most of this on its own - no collision, no interaction,
@@ -264,7 +345,7 @@ public final class FakePlayerManager {
      * whatever mode the player is in.
      */
     private void makeBodiless() {
-        Player bukkitPlayer = Bukkit.getPlayer(ID);
+        Player bukkitPlayer = Bukkit.getPlayer(id);
         if (bukkitPlayer == null) {
             return;
         }
@@ -449,7 +530,7 @@ public final class FakePlayerManager {
      * <p>Only while {@link #protect} holds, so {@code stop} is not fought.
      */
     private void reviveIfRemoved() {
-        if (!protect || Bukkit.getPlayer(ID) != null) {
+        if (!protect || Bukkit.getPlayer(id) != null) {
             return;
         }
         if (reviveWaitPasses > 0) {
@@ -586,7 +667,7 @@ public final class FakePlayerManager {
 
             Object byUuid = NmsReflect.field(playerList.getClass(), "playersByUUID").get(playerList);
             if (byUuid instanceof Map<?, ?> map) {
-                ((Map<UUID, Object>) map).remove(ID);
+                ((Map<UUID, Object>) map).remove(id);
             }
         } catch (Throwable t) {
             plugin.getLogger().log(Level.WARNING, "Could not force-remove the fake player", t);

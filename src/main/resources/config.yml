@@ -1,5 +1,25 @@
 # Mineflayer
 
+# Settings for the fake player on this server: /mineflayer m start
+fake-player:
+
+  # Register under a freshly generated name and uuid on every join, including
+  # every automatic re-registration after something removed it.
+  #
+  # Off by default, and worth understanding before turning on. With it off the
+  # player is always 'Mineflayer' with one fixed uuid, so it owns a single
+  # player-data file and is one recognisable identity in the console and the
+  # player list. With it on, every join is a stranger: a new name in the player
+  # list, and a new file under world/playerdata that is never reused, which on a
+  # server that keeps re-registering the player accumulates.
+  #
+  # This is not needed to survive a ban here. A ban cannot remove the player from
+  # this server at all: the kick is cancelled as an event, and the
+  # re-registration path never consults the ban list in the first place. It is
+  # offered because it was asked for, not because it protects anything the other
+  # layers do not already cover.
+  random-identity: false
+
 # Settings for the remote bot: /mineflayer m connectto <ip> <port> start
 #
 # The bot is a real client connection to another server. That server needs no
@@ -41,3 +61,22 @@ remote:
   # Echo chat and system messages from the target server into this server's
   # console. Turn off if the target is busy enough to be noisy.
   relay-chat: true
+
+  # Log in under a freshly generated name and uuid on every attempt, including
+  # every automatic reconnect.
+  #
+  # Off by default, because a stable identity is what most setups want: it is
+  # what lets the bot keep its inventory, its position, its permissions and its
+  # whitelist entry across reconnects. With this on, every join is a stranger to
+  # the target - none of that carries over, and a target that keeps a player list
+  # accumulates names that never repeat.
+  #
+  # Only applies to offline targets. A premium account can only log in under the
+  # name it owns, so this is ignored - with a line in the console - when an
+  # access token is set.
+  #
+  # Worth being clear about what this does and does not evade: it defeats a ban
+  # on the name, and does nothing at all about a ban on the address, which is
+  # what a target reaches for once it notices names that never repeat. On a
+  # server you control, whitelisting one stable name is the better answer.
+  random-identity: false
