@@ -75,6 +75,15 @@ final class PacketBuf {
             return value;
         }
 
+        /** A four-byte big-endian float, as health and saturation arrive. */
+        float readFloat() throws IOException {
+            int bits = 0;
+            for (int i = 0; i < 4; i++) {
+                bits = (bits << 8) | readUnsignedByte();
+            }
+            return Float.intBitsToFloat(bits);
+        }
+
         byte[] readBytes(int length) throws IOException {
             if (length < 0 || length > remaining()) {
                 throw new IOException("declared length " + length + " exceeds the packet");

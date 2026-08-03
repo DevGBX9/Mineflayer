@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.security.PublicKey;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import javax.crypto.SecretKey;
@@ -54,6 +55,46 @@ final class RemoteBotConnection {
     private static final String SYSTEM_CHAT = "minecraft:system_chat";
     private static final String START_CONFIGURATION = "minecraft:start_configuration";
     private static final String CONFIGURATION_ACKNOWLEDGED = "minecraft:configuration_acknowledged";
+    private static final String CUSTOM_PAYLOAD = "minecraft:custom_payload";
+    private static final String PLAYER_LOADED = "minecraft:player_loaded";
+    private static final String MOVE_PLAYER_STATUS_ONLY = "minecraft:move_player_status_only";
+    private static final String PLAYER_INPUT = "minecraft:player_input";
+    private static final String CLIENT_COMMAND = "minecraft:client_command";
+    private static final String SET_HEALTH = "minecraft:set_health";
+    private static final String PLAYER_COMBAT_KILL = "minecraft:player_combat_kill";
+    private static final String RESOURCE_PACK_PUSH = "minecraft:resource_pack_push";
+    private static final String RESOURCE_PACK = "minecraft:resource_pack";
+
+    /** The brand a vanilla client reports, on the channel it reports it on. */
+    private static final String BRAND_CHANNEL = "minecraft:brand";
+    private static final String BRAND_VALUE = "vanilla";
+
+    /** {@code ServerboundMovePlayerPacket.FLAG_ON_GROUND}, verified against the jar. */
+    private static final int FLAG_ON_GROUND = 1;
+
+    /** {@code ServerboundClientCommandPacket.Action.PERFORM_RESPAWN}. */
+    private static final int ACTION_PERFORM_RESPAWN = 0;
+
+    /** {@code ServerboundResourcePackPacket.Action} ordinals. */
+    private static final int PACK_SUCCESSFULLY_LOADED = 0;
+    private static final int PACK_ACCEPTED = 3;
+
+    /**
+     * How often the bot reports that it is still there.
+     *
+     * <p>A real client sends a movement packet every tick; one a second is the
+     * quietest rate that still reads as a client rather than a stalled socket.
+     */
+    private static final long TICK_INTERVAL_MS = 1_000;
+
+    /**
+     * How often an input packet is sent, in ticks of the above.
+     *
+     * <p>This is the packet that matters for staying online: of everything a
+     * client can send, only a real position change and this one reset the
+     * server's idle timer, and this one carries no position to be checked.
+     */
+    private static final int INPUT_EVERY_TICKS = 15;
 
     private static final int CONNECT_TIMEOUT_MS = 10_000;
 
@@ -82,11 +123,24 @@ final class RemoteBotConnection {
     private volatile boolean closing;
     private FrameCodec codec;
 
-    /** Which phase's id table applies to what is being read and written. */
-    private PacketIds.Phase phase = PacketIds.Phase.HANDSHAKE;
+    /**
+     * Which phase's id table applies to what is being read and written.
+     *
+     * <p>Volatile because the ticker thread reads it to resolve the ids it sends,
+     * while the reader thread is what advances it.
+     */
+    private volatile PacketIds.Phase phase = PacketIds.Phase.HANDSHAKE;
 
     /** Set once the play phase is reached, which is what "connected" means here. */
     private volatile boolean inPlay;
+
+    /**
+     * Sends the periodic client traffic while the bot is in play.
+     *
+     * <p>Separate from the reader thread because it has to send on a schedule of
+     * its own, and the reader spends its time blocked on the socket.
+     */
+    private volatile Thread ticker;
 
     RemoteBotConnection(String host, int port, BotAccount account, PacketIds ids,
             boolean relayChat, Consumer<String> log, Runnable onJoined) {
@@ -127,6 +181,7 @@ final class RemoteBotConnection {
             readLoop();
         } finally {
             inPlay = false;
+            stopTicker();
             closeSocket();
         }
     }
@@ -267,6 +322,7 @@ final class RemoteBotConnection {
                 send(LOGIN_ACKNOWLEDGED, new byte[0]);
                 phase = PacketIds.Phase.CONFIGURATION;
                 sendClientInformation();
+                sendBrand();
             }
             case LOGIN_DISCONNECT -> throw new IOException(
                     "the server refused the login: " + describeReason(in));
@@ -350,9 +406,14 @@ final class RemoteBotConnection {
                 send(FINISH_CONFIGURATION, new byte[0]);
                 phase = PacketIds.Phase.PLAY;
                 inPlay = true;
+                // The server starts a load timer on entering play and disconnects
+                // a client that never reports being ready.
+                sendQuietly(PLAYER_LOADED, new byte[0]);
+                startTicker();
                 log.accept("joined " + host + ":" + port + " as " + account.name() + ".");
                 onJoined.run();
             }
+            case RESOURCE_PACK_PUSH -> acceptResourcePack(in);
             case DISCONNECT -> throw new IOException(
                     "disconnected during configuration: " + describeReason(in));
             default -> {
@@ -366,20 +427,42 @@ final class RemoteBotConnection {
      *
      * <p>Sent unprompted on entering configuration. Some servers wait for it
      * before finishing, and a client that never sends it looks stuck.
+     *
+     * <p>The values are a stock client's defaults rather than the cheapest ones
+     * that would work. A view distance of 2 with every skin layer off is a
+     * combination a real player almost never has, and anti-bot plugins read
+     * exactly this packet. The bot ignores the extra chunks the server then
+     * sends, so the only cost of looking ordinary is bandwidth.
      */
     private void sendClientInformation() throws IOException {
         byte[] body = new PacketBuf.Writer()
                 .writeString("en_us")
-                .writeByte(2)          // view distance, deliberately small
+                .writeByte(10)         // view distance: a plausible default
                 .writeVarInt(0)        // chat mode: enabled
                 .writeBoolean(true)    // chat colours
-                .writeByte(0)          // no skin layers
+                .writeByte(0x7F)       // all skin layers on, as a fresh client has
                 .writeVarInt(1)        // main hand: right
                 .writeBoolean(false)   // no text filtering
-                .writeBoolean(false)   // keep the bot out of the public player list
+                .writeBoolean(true)    // listed in the player list, like any client
                 .writeVarInt(0)        // particle status: all
                 .toByteArray();
         send(CLIENT_INFORMATION, body);
+    }
+
+    /**
+     * Reports the client brand.
+     *
+     * <p>Every real client sends this, and the server exposes it to plugins as
+     * the player's brand. A player whose brand is empty is the single cheapest
+     * bot check there is, so not sending it is what would stand out - the packet
+     * itself is one string on a well-known channel.
+     */
+    private void sendBrand() throws IOException {
+        byte[] body = new PacketBuf.Writer()
+                .writeString(BRAND_CHANNEL)
+                .writeString(BRAND_VALUE)
+                .toByteArray();
+        send(CUSTOM_PAYLOAD, body);
     }
 
     // --------------------------------------------------------------------- play
@@ -390,11 +473,17 @@ final class RemoteBotConnection {
             case PING -> answerPing(in);
             case PLAYER_POSITION -> confirmTeleport(in);
             case SYSTEM_CHAT -> relayChat(in);
+            case RESOURCE_PACK_PUSH -> acceptResourcePack(in);
+            case SET_HEALTH -> respawnIfDead(in);
+            // Sent when the player dies; the respawn request is the only way out
+            // of the death screen, and a client that never sends it stays there.
+            case PLAYER_COMBAT_KILL -> requestRespawn();
             case START_CONFIGURATION -> {
                 // The server is moving the connection back to configuration, which
                 // is how it hands a client to another world or resource pack set.
                 // It has to be acknowledged before the server will continue, and
                 // the phase switches with it.
+                stopTicker();
                 send(CONFIGURATION_ACKNOWLEDGED, new byte[0]);
                 phase = PacketIds.Phase.CONFIGURATION;
                 inPlay = false;
@@ -405,6 +494,50 @@ final class RemoteBotConnection {
                 // Chunks, entities, inventory: all skipped.
             }
         }
+    }
+
+    /**
+     * Asks to respawn once the server reports zero health.
+     *
+     * <p>Read rather than assumed from the combat packet alone, because a death
+     * that happens while the bot is loading may only ever show up here.
+     */
+    private void respawnIfDead(PacketBuf.Reader in) throws IOException {
+        // Health leads the packet; the food and saturation after it are not needed.
+        if (in.readFloat() <= 0.0F) {
+            requestRespawn();
+        }
+    }
+
+    /**
+     * Leaves the death screen.
+     *
+     * <p>Sent as a request rather than a state change: the server decides where
+     * the bot reappears. Without it a dead bot stays connected but frozen, which
+     * looks exactly like a stuck client.
+     */
+    private void requestRespawn() throws IOException {
+        send(CLIENT_COMMAND,
+                new PacketBuf.Writer().writeVarInt(ACTION_PERFORM_RESPAWN).toByteArray());
+    }
+
+    /**
+     * Accepts a resource pack without downloading it.
+     *
+     * <p>A server with {@code require-resource-pack} disconnects any client that
+     * declines or stays silent, so this is the difference between joining and
+     * being refused on those servers. The pack is not fetched - the bot renders
+     * nothing - and the two replies are what a client sends once it has the pack
+     * in hand, in the order the server expects them.
+     */
+    private void acceptResourcePack(PacketBuf.Reader in) throws IOException {
+        UUID id = in.readUuid();
+        send(RESOURCE_PACK, packReply(id, PACK_ACCEPTED));
+        send(RESOURCE_PACK, packReply(id, PACK_SUCCESSFULLY_LOADED));
+    }
+
+    private static byte[] packReply(UUID id, int action) {
+        return new PacketBuf.Writer().writeUuid(id).writeVarInt(action).toByteArray();
     }
 
     /**
@@ -443,6 +576,71 @@ final class RemoteBotConnection {
         }
     }
 
+    // ------------------------------------------------------------------ ticker
+
+    /**
+     * Starts the traffic that keeps the bot from looking idle.
+     *
+     * <p>Two different silences get a client disconnected, and they need
+     * different answers. A socket that sends nothing at all looks dead, which the
+     * status packet covers. Separately the server tracks when the player last
+     * <em>did</em> something and disconnects on {@code player-idle-timeout}; the
+     * keepalive reply does not count for that, which is why a bot that answers
+     * every ping still gets kicked at the timeout.
+     *
+     * <p>Only two things reset that timer without claiming a position: a real
+     * move, and an input packet. The input packet is used because a claimed
+     * position has to survive the server's movement checks, and an empty input
+     * has nothing to check.
+     */
+    private void startTicker() {
+        stopTicker();
+        Thread t = new Thread(this::tickLoop, "Mineflayer-remote-bot-tick");
+        t.setDaemon(true);
+        this.ticker = t;
+        t.start();
+    }
+
+    private void stopTicker() {
+        Thread t = this.ticker;
+        this.ticker = null;
+        if (t != null) {
+            t.interrupt();
+        }
+    }
+
+    private void tickLoop() {
+        Thread self = Thread.currentThread();
+        int tick = 0;
+        // Compared by identity: a ticker replaced by a later startTicker must
+        // stop, even though the connection is still live.
+        while (self == this.ticker && inPlay && !closing) {
+            try {
+                Thread.sleep(TICK_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                self.interrupt();
+                return;
+            }
+            if (self != this.ticker || !inPlay || closing) {
+                return;
+            }
+
+            try {
+                sendQuietly(MOVE_PLAYER_STATUS_ONLY,
+                        new PacketBuf.Writer().writeByte(FLAG_ON_GROUND).toByteArray());
+
+                if (++tick % INPUT_EVERY_TICKS == 0) {
+                    // No keys held: the packet says "still here", not "moving".
+                    sendQuietly(PLAYER_INPUT, new PacketBuf.Writer().writeByte(0).toByteArray());
+                }
+            } catch (IOException e) {
+                // The socket is gone. The reader thread owns reporting that, and
+                // it is about to; saying it twice would only be noise.
+                return;
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ shared
 
     /** Keepalive ids are longs, and the same value has to come back unchanged. */
@@ -460,6 +658,28 @@ final class RemoteBotConnection {
     private void send(String name, byte[] body) throws IOException {
         synchronized (writeLock) {
             sendLocked(name, body);
+        }
+    }
+
+    /**
+     * Sends a packet this build may not have.
+     *
+     * <p>For packets that help the bot stay online but are not required to be
+     * connected. If a fork renamed one, the right outcome is a bot that keeps
+     * running with one protection missing, not a connection that refuses to
+     * start - the same reasoning as {@code NmsReflect.fieldOrNull} for the local
+     * fake player. A genuine write failure still propagates, because that means
+     * the socket is gone rather than the packet being unknown.
+     */
+    private void sendQuietly(String name, byte[] body) throws IOException {
+        int id;
+        try {
+            id = ids.serverbound(phase, name);
+        } catch (IOException unknownPacket) {
+            return;
+        }
+        synchronized (writeLock) {
+            codec.writePacket(id, body);
         }
     }
 

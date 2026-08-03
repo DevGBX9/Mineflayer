@@ -16,12 +16,13 @@ import com.devgbx9.mineflayer.FakePlayerManager;
  * {@link RemoteBotConnection}; this class is what decides when a new one is
  * opened, when a lost one is retried, and when the whole thing is done.
  *
- * <p>Reconnects back off, doubling from a second up to a ceiling, and give up
- * after a fixed number of consecutive failures. Both limits exist for the same
- * reason as {@code FakePlayerManager}'s revive cap: a target that refuses the
- * login refuses it every time, and retrying it forever would fill the log
- * without ever succeeding. A connection that reaches the play phase resets the
- * count, so a long-lived bot that drops once does not inherit old failures.
+ * <p>Reconnects back off, doubling from a second up to a ceiling, and never stop
+ * while the bot is meant to be running. Giving up was considered and rejected:
+ * the reasons a target refuses a login are overwhelmingly temporary - the server
+ * is restarting, asleep, or full - and a bot that abandoned the target ten
+ * minutes ago looks exactly like one that was never started. The ceiling is what
+ * keeps an unreachable target from filling the log, and repeated failures are
+ * logged at a widening interval rather than on every attempt.
  *
  * <p>All networking runs on this class's own thread. Nothing here touches the
  * Bukkit API from that thread except through {@link #post}, because the server
@@ -33,13 +34,8 @@ public final class RemoteBotManager {
     private static final long FIRST_RETRY_MS = 1_000;
     private static final long MAX_RETRY_MS = 30_000;
 
-    /**
-     * Consecutive failures before the bot stops trying.
-     *
-     * <p>Counts only failures with no successful join in between; reaching the
-     * play phase clears it.
-     */
-    private static final int MAX_FAILURES = 6;
+    /** Failures between log lines once the backoff has reached its ceiling. */
+    private static final int QUIET_LOG_INTERVAL = 20;
 
     private final Plugin plugin;
     /** Used for the handoff: the local fake player steps aside while the bot is away. */
@@ -240,12 +236,20 @@ public final class RemoteBotManager {
                     failures = 1;
                     retryDelay = FIRST_RETRY_MS;
                 }
-                post("connection to " + host + ":" + port + " failed: " + describe(e));
+                // Every attempt is reported until the backoff reaches its
+                // ceiling, then one in twenty: past that point the message stops
+                // being news and the failure is usually the same one.
+                if (retryDelay < MAX_RETRY_MS || failures % QUIET_LOG_INTERVAL == 0) {
+                    post("connection to " + host + ":" + port + " failed: " + describe(e)
+                            + (failures > 1 ? " (attempt " + failures + ")" : ""));
+                }
 
-                if (failures >= MAX_FAILURES) {
-                    post("giving up after " + MAX_FAILURES + " failed attempts.");
-                    finishAfterGivingUp();
-                    return;
+                if (retryDelay >= MAX_RETRY_MS) {
+                    // The target has been refusing for a while. Put the local
+                    // player back so the sending server is not left with no
+                    // player at all, and keep retrying: if the target returns,
+                    // onJoined takes the local player down again.
+                    bringLocalPlayerBack();
                 }
             }
 
@@ -272,25 +276,28 @@ public final class RemoteBotManager {
     }
 
     /**
-     * Clears the running state after the retry limit was reached.
+     * Puts the local fake player back while the bot keeps retrying a target that
+     * is not answering.
      *
-     * <p>The bot stopped on its own rather than being told to, so the local fake
-     * player is put back here too - the handoff is meant to be temporary, and
-     * leaving neither player online would be a worse outcome than either one.
+     * <p>The handoff assumes the bot arrives somewhere. When it cannot, leaving
+     * neither player online is the one outcome worse than either, so the local
+     * player comes back and the bot carries on trying in the background. Clearing
+     * the flag is what makes this run once rather than every attempt, and a later
+     * successful join sets it again through {@link #onJoined}.
+     *
+     * <p>Called from the worker thread, so the start itself is bounced to the
+     * main thread.
      */
-    private void finishAfterGivingUp() {
-        boolean restore;
+    private void bringLocalPlayerBack() {
         synchronized (lock) {
-            running = false;
-            connection = null;
-            worker = null;
-            restore = restoreLocalPlayer;
+            if (!restoreLocalPlayer) {
+                return;
+            }
             restoreLocalPlayer = false;
         }
-        if (restore) {
-            // Back on the main thread: starting the fake player touches the server.
-            Bukkit.getScheduler().runTask(plugin, localPlayer::start);
-        }
+        post("the target is still refusing; bringing the local fake player back "
+                + "while the bot keeps trying.");
+        Bukkit.getScheduler().runTask(plugin, localPlayer::start);
     }
 
     /**

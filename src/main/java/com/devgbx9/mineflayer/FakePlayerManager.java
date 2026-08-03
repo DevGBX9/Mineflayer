@@ -71,11 +71,28 @@ public final class FakePlayerManager {
     private static final int FAKE_LATENCY_MS = 8;
 
     /**
-     * How many failed re-registrations before the watchdog stops trying. Without a
-     * cap, a server that rejects the join would be retried twice a second forever,
-     * filling the log.
+     * How many failed re-registrations are retried at full speed.
+     *
+     * <p>Not a give-up point. The upkeep timer runs twice a second, so five
+     * failures can pass in two and a half seconds - a world still loading, or
+     * another plugin throwing inside a join listener - and abandoning the player
+     * on that basis would undo the guarantee this class exists to make. Past this
+     * count the retries slow down instead, which is all a limit was ever
+     * protecting: a server that refuses the join every time would otherwise fill
+     * the log twice a second forever.
      */
-    private static final int MAX_REVIVE_FAILURES = 5;
+    private static final int FAST_REVIVE_ATTEMPTS = 5;
+
+    /**
+     * The longest wait between slow retries, counted in upkeep passes.
+     *
+     * <p>120 passes at 10 ticks each is a minute, so a cause that clears on its
+     * own is picked up within a minute however long it lasted.
+     */
+    private static final int MAX_REVIVE_WAIT_PASSES = 120;
+
+    /** Failures between log lines once the retries have slowed down. */
+    private static final int QUIET_REVIVE_LOG_INTERVAL = 20;
 
     private final Plugin plugin;
 
@@ -102,6 +119,8 @@ public final class FakePlayerManager {
     private Method resetLastActionTime;
     /** Consecutive failed revives; reset by a successful one. */
     private int reviveFailures;
+    /** Upkeep passes still to skip before the next revive attempt. */
+    private int reviveWaitPasses;
 
     public FakePlayerManager(Plugin plugin) {
         this.plugin = plugin;
@@ -139,6 +158,10 @@ public final class FakePlayerManager {
         this.serverPlayer = null;
         this.listener = null;
         this.reviveFailures = 0;
+        // Clears the backoff as well as the count: this removal is new, so the
+        // next pass should act on it immediately rather than serve out a wait
+        // that an earlier, unrelated failure imposed.
+        this.reviveWaitPasses = 0;
     }
 
     /**
@@ -376,17 +399,25 @@ public final class FakePlayerManager {
      * to cancel. Rather than trying to name every such path, this notices the
      * outcome - the player is no longer online - and joins it back.
      *
+     * <p>It never stops trying. A failing revive only slows down, because the
+     * reasons a join fails are usually temporary - a world mid-load, a listener
+     * throwing during shutdown - and a fake player that gave up an hour ago is
+     * indistinguishable from one that was never started.
+     *
      * <p>Only while {@link #protect} holds, so {@code stop} is not fought.
      */
     private void reviveIfRemoved() {
         if (!protect || Bukkit.getPlayer(ID) != null) {
             return;
         }
-        if (reviveFailures >= MAX_REVIVE_FAILURES) {
+        if (reviveWaitPasses > 0) {
+            reviveWaitPasses--;
             return;
         }
 
-        plugin.getLogger().info("The fake player was removed; registering it again.");
+        if (reviveFailures == 0) {
+            plugin.getLogger().info("The fake player was removed; registering it again.");
+        }
         // Drop the dead connection first: spawn() builds a fresh one, and the old
         // channel is what a kick would have closed.
         discardConnection();
@@ -396,19 +427,44 @@ public final class FakePlayerManager {
         try {
             spawn();
             reviveFailures = 0;
+            reviveWaitPasses = 0;
         } catch (Throwable t) {
             reviveFailures++;
             serverPlayer = null;
             connection = null;
             listener = null;
-            if (reviveFailures >= MAX_REVIVE_FAILURES) {
-                plugin.getLogger().log(Level.SEVERE,
-                        "Giving up on re-registering the fake player after "
-                                + MAX_REVIVE_FAILURES + " attempts", t);
-            } else {
-                plugin.getLogger().log(Level.WARNING,
-                        "Could not re-register the fake player; retrying", t);
-            }
+            scheduleNextRevive(t);
+        }
+    }
+
+    /**
+     * Backs the retries off after a failure, and logs at the same cadence.
+     *
+     * <p>The wait doubles per failure once the fast attempts are used up, so a
+     * server that refuses the join settles at one attempt a minute rather than
+     * two a second. The log follows the retries instead of repeating a stack
+     * trace that has not changed.
+     */
+    private void scheduleNextRevive(Throwable cause) {
+        if (reviveFailures < FAST_REVIVE_ATTEMPTS) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not re-register the fake player; retrying", cause);
+            return;
+        }
+
+        int slowAttempt = reviveFailures - FAST_REVIVE_ATTEMPTS;
+        // Capped before the shift as well as after: past 31 doublings the shift
+        // itself would wrap and hand back a short wait.
+        reviveWaitPasses = slowAttempt >= 30
+                ? MAX_REVIVE_WAIT_PASSES
+                : Math.min(2 << slowAttempt, MAX_REVIVE_WAIT_PASSES);
+
+        if (reviveFailures == FAST_REVIVE_ATTEMPTS
+                || reviveFailures % QUIET_REVIVE_LOG_INTERVAL == 0) {
+            plugin.getLogger().log(Level.WARNING,
+                    "The fake player has failed to re-register " + reviveFailures
+                            + " times; still retrying, now every "
+                            + (reviveWaitPasses / 2) + "s", cause);
         }
     }
 
@@ -434,6 +490,7 @@ public final class FakePlayerManager {
         this.connection = null;
         this.listener = null;
         this.reviveFailures = 0;
+        this.reviveWaitPasses = 0;
 
         String failure = null;
         if (player != null) {
