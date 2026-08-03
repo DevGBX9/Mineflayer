@@ -8,7 +8,9 @@ api-version: '${api_version}'
 commands:
   mineflayer:
     description: Mineflayer control command
-    usage: '/mineflayer m <start|stop>'
+    usage: |-
+      /mineflayer m <start|stop> - local fake player
+      /mineflayer m connectto <ip> <port> <start|stop> - bot on another server
     aliases: [ mf ]
     permission: mineflayer.command
 

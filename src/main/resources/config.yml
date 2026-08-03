@@ -1,0 +1,41 @@
+# Mineflayer
+
+# Settings for the remote bot: /mineflayer m connectto <ip> <port> start
+#
+# The bot is a real client connection to another server. That server needs no
+# plugin and is given no special treatment - it sees an ordinary player joining,
+# which is exactly why nothing has to be installed on it.
+remote:
+
+  # The name the bot logs in with on the target server.
+  username: MineflayerBot
+
+  # --- Offline targets (online-mode=false) ---
+  #
+  # Leave access-token empty. The name above is taken at face value and the uuid
+  # is derived from it the same way the target server derives it, so the bot
+  # keeps one identity - and one inventory - across reconnects.
+
+  # --- Premium targets (online-mode=true) ---
+  #
+  # A server with online-mode=true asks Mojang whether the login is genuine, and
+  # only the account holder's own token produces a yes. So joining one needs a
+  # real Microsoft account that owns the name above: fill in both fields below.
+  #
+  # There is no way around this. It is checked on Mojang's side, not the target
+  # server's, so no setting here can stand in for it. An account you do not own
+  # cannot be used.
+  #
+  # Access tokens are short-lived. When the target starts reporting that Mojang
+  # refused the session, the token has expired and needs replacing.
+  #
+  # Treat this file as a secret once a token is in it: anyone who can read the
+  # token can act as that account.
+  access-token: ''
+
+  # The profile uuid of the account above, dashed. Required with a token.
+  uuid: ''
+
+  # Echo chat and system messages from the target server into this server's
+  # console. Turn off if the target is busy enough to be noisy.
+  relay-chat: true

@@ -17,13 +17,13 @@ import java.lang.reflect.Method;
  * their forks all use Mojang names, so class and member names are stable enough
  * to look up as plain strings.
  */
-final class NmsReflect {
+public final class NmsReflect {
 
     private NmsReflect() {
     }
 
     /** Loads a class, or throws with a message naming what was missing. */
-    static Class<?> clazz(String name) throws ReflectiveOperationException {
+    public static Class<?> clazz(String name) throws ReflectiveOperationException {
         try {
             return Class.forName(name);
         } catch (ClassNotFoundException e) {
@@ -35,7 +35,7 @@ final class NmsReflect {
      * Finds a field by name, walking up the hierarchy so inherited private
      * fields are reachable too.
      */
-    static Field field(Class<?> owner, String name) throws ReflectiveOperationException {
+    public static Field field(Class<?> owner, String name) throws ReflectiveOperationException {
         for (Class<?> c = owner; c != null && c != Object.class; c = c.getSuperclass()) {
             try {
                 Field f = c.getDeclaredField(name);
@@ -132,8 +132,17 @@ final class NmsReflect {
                 "no zero-arg method returning " + returns.getName() + " on " + owner.getName());
     }
 
-    /** Finds a method by name whose parameters accept {@code args}. */
-    static Method method(Class<?> owner, String name, Object... args)
+    /**
+     * Finds a method by name whose parameters accept {@code args}.
+     *
+     * <p>Declared methods first, walking up the superclass chain, then the public
+     * methods including those inherited from interfaces. The second pass is not
+     * redundant: a class that implements an interface without overriding a default
+     * method does not declare it, and a lambda or record implementing a protocol
+     * interface is exactly that case. Missing it would fail at runtime on a method
+     * that is plainly callable.
+     */
+    public static Method method(Class<?> owner, String name, Object... args)
             throws ReflectiveOperationException {
         for (Class<?> c = owner; c != null; c = c.getSuperclass()) {
             for (Method m : c.getDeclaredMethods()) {
@@ -141,6 +150,12 @@ final class NmsReflect {
                     m.setAccessible(true);
                     return m;
                 }
+            }
+        }
+        for (Method m : owner.getMethods()) {
+            if (m.getName().equals(name) && accepts(m, args)) {
+                m.setAccessible(true);
+                return m;
             }
         }
         throw new ReflectiveOperationException(
@@ -160,7 +175,7 @@ final class NmsReflect {
     }
 
     /** Reads a public static field, used for enum constants such as GameType.SPECTATOR. */
-    static Object staticField(Class<?> owner, String name) throws ReflectiveOperationException {
+    public static Object staticField(Class<?> owner, String name) throws ReflectiveOperationException {
         Field f = owner.getField(name);
         f.setAccessible(true);
         return f.get(null);
