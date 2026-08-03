@@ -2,7 +2,6 @@ package com.devgbx9.mineflayer;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Map;
 import java.util.UUID;
@@ -22,6 +21,10 @@ import org.bukkit.scheduler.BukkitTask;
  * raises the player count by one and keeps the server out of its idle state. It is
  * placed in spectator mode, which leaves it with no collidable body and nothing to
  * interact with, and it is tied to no real player.
+ *
+ * <p>It has no lasting identity. Every join - the first one and every recovery
+ * after it - draws a new name and a new uuid, so nothing on this server can be
+ * keyed to the player from one join to the next.
  *
  * <p>Three details keep it alive once registered:
  * <ul>
@@ -66,27 +69,14 @@ import org.bukkit.scheduler.BukkitTask;
  */
 public final class FakePlayerManager {
 
-    /** The name used unless a rotating identity is configured. */
-    private static final String NAME = "Mineflayer";
-
     /**
-     * The uuid that goes with {@link #NAME}.
+     * The name the fake player falls back to before its first join.
      *
-     * <p>Fixed, so the fake player owns one player entry - and one player-data
-     * file - across restarts rather than leaving a new one behind per start. The
-     * seed is deliberately unchanged from the first release: it is what every
-     * existing install's world folder and permissions are already keyed to, and
-     * a nicer derivation would silently orphan all of it.
-     *
-     * <p>The charset is named rather than left to the platform. The seed is ASCII
-     * so the bytes are the same either way, but a uuid that depends on the default
-     * charset is a uuid that can differ between two servers for no visible reason.
+     * <p>Not the name it actually joins under: every join draws a fresh one. This
+     * is what {@link #name} reads before any join has happened and what
+     * {@link #defaultName} hands the remote bot as a configuration default.
      */
-    private static final UUID FIXED_ID = UUID.nameUUIDFromBytes(
-            "Mineflayer:monitor".getBytes(StandardCharsets.UTF_8));
-
-    /** Config key: join under a fresh name and uuid every time. */
-    private static final String ROTATE_KEY = "fake-player.random-identity";
+    private static final String NAME = "Mineflayer";
 
     /** Reported as the connection latency, plausibly low and steady. */
     private static final int FAKE_LATENCY_MS = 8;
@@ -120,16 +110,16 @@ public final class FakePlayerManager {
     /**
      * The identity the current join is using.
      *
-     * <p>Fixed unless {@code fake-player.random-identity} is on, in which case a
-     * new pair is drawn at the start of every join - the command's first one and
-     * every automatic re-registration after it.
+     * <p>Redrawn at the start of every join - the command's first one and every
+     * automatic re-registration after it - so no two joins present the same name
+     * or uuid. The initial values are only what these read before the first join
+     * has happened.
      *
      * <p>{@code volatile} because {@link FakePlayerGuard} reads the name on the
-     * main thread while a join may be settling it, and because the remote bot
-     * reads it from its own thread when no name of its own is configured.
+     * main thread while a join may be settling it.
      */
     private volatile String name = NAME;
-    private volatile UUID id = FIXED_ID;
+    private volatile UUID id = UUID.randomUUID();
 
     private Object serverPlayer;
     private Object connection;
@@ -168,23 +158,20 @@ public final class FakePlayerManager {
     /**
      * The name the fake player is currently online under.
      *
-     * <p>Not a constant: with a rotating identity this changes on every join, and
-     * every caller - the guard's command shield, the remote bot's fallback name -
-     * has to see the name in use now rather than the one it started with.
+     * <p>Not a constant: this changes on every join, and every caller - the
+     * guard's command shield, the command's own replies - has to see the name in
+     * use now rather than the one the plugin started with.
      */
     public String name() {
         return name;
     }
 
     /**
-     * The name used when no identity is rotating and nothing overrides it.
+     * The name used before the first join, and as the remote bot's default.
      *
-     * <p>Distinct from {@link #name()} on purpose. A caller that wants to know
-     * what the player is called right now asks {@code name()}; a caller looking
-     * for a sensible default to write down - the remote bot, when
-     * {@code remote.username} is blank - wants this one, because a generated name
-     * borrowed from a rotating local player would be an arbitrary string frozen
-     * for the whole run.
+     * <p>Never the name the player is actually online under - see {@link #name()}
+     * for that. It exists so a caller looking for something to write into a
+     * configuration file has a fixed answer rather than one join's throwaway name.
      */
     public static String defaultName() {
         return NAME;
@@ -310,23 +297,18 @@ public final class FakePlayerManager {
     }
 
     /**
-     * Settles the name and uuid this join will use.
+     * Draws the name and uuid this join will use.
      *
-     * <p>With the setting off - the default - this is the same pair every time,
-     * which is what lets the fake player own one player-data file rather than
-     * strewing a new one across the world folder per join.
+     * <p>Every join is a stranger: a name and uuid seen nowhere before, tied to
+     * nothing that came before it. Not conditional and not configurable - a new
+     * identity per join is what this plugin does.
      *
-     * <p>With it on, every join is a stranger: a name and uuid seen nowhere
-     * before, tied to nothing that came before it. Read per join rather than
-     * cached so the setting can be changed with a reload and take effect on the
-     * next re-registration.
+     * <p>The cost is real and worth naming: the player owns no lasting player
+     * entry, so every join writes a fresh file under {@code world/playerdata}
+     * that is never reused, and nothing keyed to a uuid - a permission grant, a
+     * whitelist entry, a home - survives from one join to the next.
      */
     private void chooseIdentity() {
-        if (!plugin.getConfig().getBoolean(ROTATE_KEY, false)) {
-            this.name = NAME;
-            this.id = FIXED_ID;
-            return;
-        }
         this.name = RandomIdentity.name();
         // Random rather than derived from the name: nothing should tie this join
         // to the last one, and locally no server has to agree with us about it.

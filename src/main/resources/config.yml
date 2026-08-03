@@ -1,24 +1,17 @@
 # Mineflayer
 
-# Settings for the fake player on this server: /mineflayer m start
-fake-player:
-
-  # Register under a freshly generated name and uuid on every join, including
-  # every automatic re-registration after something removed it.
-  #
-  # Off by default, and worth understanding before turning on. With it off the
-  # player is always 'Mineflayer' with one fixed uuid, so it owns a single
-  # player-data file and is one recognisable identity in the console and the
-  # player list. With it on, every join is a stranger: a new name in the player
-  # list, and a new file under world/playerdata that is never reused, which on a
-  # server that keeps re-registering the player accumulates.
-  #
-  # This is not needed to survive a ban here. A ban cannot remove the player from
-  # this server at all: the kick is cancelled as an event, and the
-  # re-registration path never consults the ban list in the first place. It is
-  # offered because it was asked for, not because it protects anything the other
-  # layers do not already cover.
-  random-identity: false
+# Both the fake player and the remote bot join under a freshly generated name and
+# a random uuid, every time - the first join from the command and every automatic
+# rejoin after it. There is no setting for this; it is how the plugin works.
+#
+# What that costs, so it is not a surprise: neither one owns a lasting player
+# entry. Locally, every join writes a new file under world/playerdata that is
+# never reused. On a remote target, no inventory, position, permission or
+# whitelist entry carries over from one join to the next, and a target that keeps
+# a player list accumulates names that never repeat.
+#
+# The one exception is a premium account, below: a token authenticates the single
+# name it owns, so that bot keeps its own identity.
 
 # Settings for the remote bot: /mineflayer m connectto <ip> <port> start
 #
@@ -27,16 +20,16 @@ fake-player:
 # which is exactly why nothing has to be installed on it.
 remote:
 
-  # The name the bot logs in with on the target server. Kept the same as the
-  # local fake player's name so the bot is one recognisable identity wherever
-  # it is, whether it is sitting on this server or on another one.
+  # The name the bot logs in with, used only for a premium target: it has to be
+  # the name the account below actually owns, or Mojang refuses the session.
+  #
+  # Ignored on an offline target, where the bot generates its own name per join.
   username: Mineflayer
 
   # --- Offline targets (online-mode=false) ---
   #
-  # Leave access-token empty. The name above is taken at face value and the uuid
-  # is derived from it the same way the target server derives it, so the bot
-  # keeps one identity - and one inventory - across reconnects.
+  # Leave access-token empty. Nothing else is needed: the bot picks a new name
+  # and uuid for every attempt and the target takes them at face value.
 
   # --- Premium targets (online-mode=true) ---
   #
@@ -46,7 +39,8 @@ remote:
   #
   # There is no way around this. It is checked on Mojang's side, not the target
   # server's, so no setting here can stand in for it. An account you do not own
-  # cannot be used.
+  # cannot be used - which is also why a premium bot keeps one identity across
+  # joins instead of generating a new one.
   #
   # Access tokens are short-lived. When the target starts reporting that Mojang
   # refused the session, the token has expired and needs replacing.
@@ -61,22 +55,3 @@ remote:
   # Echo chat and system messages from the target server into this server's
   # console. Turn off if the target is busy enough to be noisy.
   relay-chat: true
-
-  # Log in under a freshly generated name and uuid on every attempt, including
-  # every automatic reconnect.
-  #
-  # Off by default, because a stable identity is what most setups want: it is
-  # what lets the bot keep its inventory, its position, its permissions and its
-  # whitelist entry across reconnects. With this on, every join is a stranger to
-  # the target - none of that carries over, and a target that keeps a player list
-  # accumulates names that never repeat.
-  #
-  # Only applies to offline targets. A premium account can only log in under the
-  # name it owns, so this is ignored - with a line in the console - when an
-  # access token is set.
-  #
-  # Worth being clear about what this does and does not evade: it defeats a ban
-  # on the name, and does nothing at all about a ban on the address, which is
-  # what a target reaches for once it notices names that never repeat. On a
-  # server you control, whitelisting one stable name is the better answer.
-  random-identity: false

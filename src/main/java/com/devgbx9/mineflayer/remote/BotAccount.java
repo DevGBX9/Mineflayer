@@ -11,13 +11,14 @@ import com.devgbx9.mineflayer.RandomIdentity;
  * <p>Two modes, because the target server decides which one is possible rather
  * than we do:
  * <ul>
- *   <li><b>Offline.</b> The name is taken at face value and the uuid is derived
- *       from it the same way a server with {@code online-mode=false} derives it,
- *       so the bot keeps one identity across reconnects.</li>
+ *   <li><b>Offline.</b> The name and uuid are taken at face value, so the bot
+ *       draws a new pair per connection attempt - see {@link #randomOffline} -
+ *       and every join is a stranger to the target.</li>
  *   <li><b>Premium.</b> A real Microsoft account, identified by its access token
  *       and profile uuid. Required by any server with {@code online-mode=true}:
  *       that server asks Mojang whether the login is genuine, and only the
- *       account holder's own token produces a yes.</li>
+ *       account holder's own token produces a yes. This is the one identity that
+ *       cannot rotate, because the token authenticates that name and no other.</li>
  * </ul>
  *
  * <p>There is no third mode. A premium server cannot be joined without an
@@ -30,11 +31,15 @@ record BotAccount(String name, UUID uuid, String accessToken) {
     private static final String OFFLINE_PREFIX = "OfflinePlayer:";
 
     /**
-     * An offline account.
+     * An offline account with the uuid a server derives from the name.
      *
-     * <p>The uuid matches what a server with {@code online-mode=false} would
-     * assign, which is what lets the bot reclaim the same player entry - and its
-     * inventory and position - when it reconnects.
+     * <p>Matches what a server with {@code online-mode=false} would assign, so a
+     * bot logging in this way reclaims the player entry - and the inventory and
+     * position - that the name already owns there.
+     *
+     * <p>Held for a configured name that has not been overridden. The connect
+     * loop draws {@link #randomOffline} per attempt instead, so this is what the
+     * name in {@code config.yml} means rather than what is presented.
      */
     static BotAccount offline(String name) {
         UUID uuid = UUID.nameUUIDFromBytes(
@@ -46,13 +51,15 @@ record BotAccount(String name, UUID uuid, String accessToken) {
      * A fresh offline account with a name and uuid seen nowhere before.
      *
      * <p>The uuid is random rather than derived from the name, so the target has
-     * nothing tying this login to the last one.
+     * nothing tying this login to the last one. Drawn once per connection
+     * attempt, which is what stops a name the target refused from being presented
+     * a second time.
      *
-     * <p>This is a different bargain from {@link #offline}, not a better one.
-     * Every join is a stranger: no inventory, no position, no permission and no
-     * whitelist entry carries over, and a target that lists its players sees the
-     * count climb with names that never repeat. It only applies where the target
-     * runs {@code online-mode=false}; a premium login is the account it is, and
+     * <p>What it costs, since it is not free: every join is a stranger. No
+     * inventory, no position, no permission and no whitelist entry carries over,
+     * and a target that lists its players sees the count climb with names that
+     * never repeat. It only applies where the target runs
+     * {@code online-mode=false}; a premium login is the account it is, and
      * nothing here can change that.
      */
     static BotAccount randomOffline() {

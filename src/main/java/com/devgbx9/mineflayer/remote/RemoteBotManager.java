@@ -131,9 +131,9 @@ public final class RemoteBotManager {
             this.restoreLocalPlayer = false;
 
             boolean relayChat = plugin.getConfig().getBoolean("remote.relay-chat", true);
-            // Read once per start, not per attempt: changing it mid-run would
-            // leave a bot rotating names on one target and not the next.
-            boolean rotate = rotateIdentity(account);
+            // Settled once per start rather than per attempt: it depends only on
+            // whether the account is premium, which cannot change mid-run.
+            boolean rotate = canRotate(account);
 
             Thread t = new Thread(() -> connectLoop(host, port, account, ids, relayChat, rotate),
                     "Mineflayer-remote-bot");
@@ -230,8 +230,9 @@ public final class RemoteBotManager {
         long nextDelay = 0;
 
         while (isRunning()) {
-            // A new identity per attempt when asked for, so a name that was
-            // refused is never presented twice.
+            // A new identity per attempt, so a name that was refused is never
+            // presented twice. Only a premium account keeps the configured one,
+            // because its token authenticates that name and no other.
             BotAccount account = rotate ? BotAccount.randomOffline() : configured;
             if (rotate) {
                 post("connecting to " + host + ":" + port + " as " + account.name() + ".");
@@ -356,22 +357,19 @@ public final class RemoteBotManager {
     }
 
     /**
-     * Whether this run should present a new identity on every attempt.
+     * Whether this run can present a new identity on every attempt.
      *
-     * <p>Refused for a premium account regardless of the setting. A token
-     * authenticates the one name it belongs to, so a rotated name would be
-     * rejected by Mojang on every attempt - the bot would simply never join, and
-     * the reason would be buried in a session error. Better to say so once, here,
-     * and keep the configured identity.
+     * <p>It always does, except for one case it physically cannot: a premium
+     * account. A token authenticates the one name it belongs to, so a rotated
+     * name would be rejected by Mojang on every attempt - the bot would simply
+     * never join, and the reason would be buried in a session error. Better to
+     * say so once, here, and keep the account's own identity.
      */
-    private boolean rotateIdentity(BotAccount account) {
-        if (!plugin.getConfig().getBoolean("remote.random-identity", false)) {
-            return false;
-        }
+    private boolean canRotate(BotAccount account) {
         if (account.isPremium()) {
-            plugin.getLogger().warning(
-                    "remote.random-identity is on, but a premium account can only log in "
-                            + "under its own name; using " + account.name() + " instead");
+            plugin.getLogger().info(
+                    "A premium account can only log in under its own name, so the bot will "
+                            + "keep using " + account.name() + " rather than a new one per join");
             return false;
         }
         return true;
@@ -380,18 +378,21 @@ public final class RemoteBotManager {
     /**
      * Reads the bot's account out of {@code config.yml}.
      *
+     * <p>The name only reaches the target for a premium account. An offline bot
+     * generates its own per attempt, so this is read for the case that needs it
+     * and harmlessly carried for the case that does not.
+     *
      * @return the account, or {@code null} if the configuration is unusable
      */
     private BotAccount readAccount() {
         FileConfiguration config = plugin.getConfig();
         String name = config.getString("remote.username", "").trim();
         if (name.isEmpty()) {
-            // Falls back rather than failing: the bot and the local fake player
-            // are meant to be one identity, so the local name is the right
-            // default, and a config.yml written before this key existed should
-            // not stop the bot from starting. The fixed name rather than the
-            // live one, because a local player that rotates its identity would
-            // otherwise lend the bot one arbitrary generated name for the run.
+            // Falls back rather than failing: a config.yml written before this key
+            // existed should not stop the bot from starting. For a premium account
+            // the fallback will not authenticate - Mojang checks the name against
+            // the token - but that failure is reported clearly by the session
+            // request, which is a better place to learn it than a refusal here.
             name = FakePlayerManager.defaultName();
             plugin.getLogger().info(
                     "remote.username is not set in config.yml; using '" + name + "'");
