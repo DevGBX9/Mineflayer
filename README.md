@@ -1,256 +1,288 @@
 # Mineflayer
 
-بلوجن ماينكرافت للسيرفرات.
+A Minecraft plugin for servers.
 
-## المنصات المدعومة
+## Supported platforms
 
-مبني ضد **Spigot API**، فيعمل على:
+Built against the **Spigot API**, so it runs on:
 
 - Bukkit
 - Spigot
 - Paper
-- Purpur وبقية الفوركات
+- Purpur and the other forks
 
-ملف jar واحد يدعم سلسلتَي **26.1.x** و **26.2.x**.
+One jar supports both the **26.1.x** and **26.2.x** lines.
 
-## البناء
+## Building
 
-البناء يتم حصرياً على GitHub Actions عند الرفع إلى المستودع.
+Builds happen exclusively on GitHub Actions, on a push to the repository.
 
 ```bash
 git push
 ```
 
-ثم نزّل الـ artifact من تاب **Actions**.
+Then download the artifact from the **Actions** tab.
 
-## الأوامر
+## Commands
 
-| الأمر | الوظيفة |
+| Command | What it does |
 |---|---|
-| `/mineflayer m start` | إدخال اللاعب الوهمي للسيرفر المحلي |
-| `/mineflayer m stop` | إخراجه من السيرفر المحلي |
-| `/mineflayer m connectto <ip> <port> start` | إرسال بوت إلى سيرفر آخر |
-| `/mineflayer m connectto <ip> <port> stop` | فصل البوت عن السيرفر الآخر |
+| `/mineflayer m start` | Join the fake player to this server |
+| `/mineflayer m stop` | Remove it from this server |
+| `/mineflayer m connectto <ip> <port> start` | Send a bot to another server |
+| `/mineflayer m connectto <ip> <port> stop` | Disconnect the bot from the other server |
 
-الاختصار `/mf` يعمل بدلاً من `/mineflayer`. الصلاحية: `mineflayer.command` (لِلأوبّ افتراضياً).
+`/mf` works as a shorthand for `/mineflayer`. Permission: `mineflayer.command` (op by
+default).
 
-## اللاعب الوهمي
+## The fake player
 
-يُسجَّل اللاعب عبر `PlayerList.placeNewPlayer`، وهي نفس نقطة الدخول التي يستخدمها
-تسجيل الدخول الحقيقي. لذلك يظهر في `Bukkit.getOnlinePlayers()` ويرفع عدد اللاعبين
-`+1` ويمنع السيرفر من الدخول في حالة الخمول. يوضع في وضع `SPECTATOR` فلا جسم له
-ولا يمكن التفاعل معه، وهو غير مرتبط بأي لاعب حقيقي.
+The player is registered through `PlayerList.placeNewPlayer`, the same entry point a
+real login uses. That is why it shows up in `Bukkit.getOnlinePlayers()`, raises the
+player count by `+1`, and keeps the server out of its idle state. It is put in
+`SPECTATOR` mode, so it has no body and nothing can interact with it, and it is tied to
+no real player.
 
-الوصول إلى داخليات السيرفر (NMS) يتم بالـ reflection وليس باعتماد وقت-التصريف،
-وهذا ما يحفظ عمل ملف jar واحد على Bukkit وSpigot وPaper والفوركات، وعلى
-السلسلتين 26.1.x و26.2.x معاً. البحث عن الدوال يتم **بالشكل** (عدد المعاملات
-وأنواعها) لا بالتوقيع الحرفي، لأن ماينكرافت تغيّر التوقيعات بين الإصدارات.
+Server internals (NMS) are reached by reflection rather than a compile-time dependency,
+and that is what keeps one jar working on Bukkit, Spigot, Paper and the forks, and on
+both the 26.1.x and 26.2.x lines. Methods are looked up **by shape** (parameter count
+and types) rather than by literal signature, because Minecraft changes signatures
+between versions.
 
-المقابل أن أي عدم تطابق يظهر وقت التشغيل لا وقت البناء، لذلك تُبلَّغ الأخطاء
-لمُصدِر الأمر وتُسجَّل في الكونسول.
+The trade-off is that any mismatch surfaces at runtime rather than at build time, so
+failures are reported to whoever ran the command and logged to the console.
 
-### حماية اللاعب الوهمي من الطرد
+### Keeping the fake player from being kicked
 
-اللاعب لا يخرج إلا بأمر `/mineflayer m stop`. ثلاث طبقات تضمن ذلك:
+The player leaves only on `/mineflayer m stop`. Three layers guarantee that:
 
-1. **المنع** — كل مؤقتات السيرفر التي تنتهي بطرد تُصفَّر مرتين في الثانية:
-   مهلة الـ keepalive، ومهلة تحميل العميل، ومهلة الخمول (`player-idle-timeout`)،
-   وفحوصات الطيران. المؤقت الذي لا يبلغ حدّه لا يطرد.
-2. **الحجب** — `FakePlayerGuard` يلغي `PlayerKickEvent`، وهو المسار الذي تمر
-   عبره أوامر `/kick` والبلوجنات الأخرى وأنظمة مكافحة الغش. الأولوية
-   `MONITOR` عن قصد: لتكون الكلمة الأخيرة فلا يستطيع بلوجن آخر إلغاء الإلغاء.
-3. **الاسترجاع** — إن نجح شيء في إزالته رغم ذلك (قطع اتصال على مستوى NMS لا
-   يُطلق أي حدث يمكن إلغاؤه) يُعاد تسجيله **في التِك التالي مباشرة** — أي خلال
-   جزء من ثانية. لا يُعاد الإدخال داخل حدث الخروج نفسه لأن السيرفر يكون ما زال
-   ينفّذ إزالته، فالانتظار تِكاً واحداً هو أسرع دخول آمن ممكن.
-   **ولا تستسلم أبداً:** إن فشلت إعادة التسجيل تتباطأ المحاولات (نصف ثانية ←
-   دقيقة كحدّ) ولا تتوقف. أسباب فشل الدخول مؤقتة في الغالب — عالَم لم يكتمل
-   تحميله، أو بلوجن آخر يرمي استثناءً داخل مستمع الدخول — واللاعب الذي استسلم
-   قبل ساعة لا يختلف عن لاعب لم يُشغَّل أصلاً.
+1. **Prevention** — every server timer that ends in a kick is reset twice a second: the
+   keepalive timeout, the client-loading timeout, the idle timeout
+   (`player-idle-timeout`), and the flight checks. A timer that never reaches its limit
+   never kicks.
+2. **Blocking** — `FakePlayerGuard` cancels `PlayerKickEvent`, which is the path `/kick`,
+   other plugins and anti-cheats all go through. The priority is `MONITOR` on purpose:
+   to have the last word, so no other plugin can cancel the cancellation.
+3. **Recovery** — if something does manage to remove it anyway (an NMS-level disconnect
+   fires no cancellable event) it is re-registered **on the very next tick** — a fraction
+   of a second. It is not re-added inside the quit event itself, because the server is
+   still carrying out the removal at that point, so waiting one tick is the fastest safe
+   join possible.
+   **And it never gives up:** if re-registration fails the attempts back off (half a
+   second up to a minute) and do not stop. The reasons a join fails are mostly
+   temporary — a world that has not finished loading, or another plugin throwing inside
+   a join listener — and a player that gave up an hour ago is no different from one that
+   was never started.
 
-### لا جسد ولا تأثّر بالأوامر
+### No body, and untouched by commands
 
-اللاعب في وضع `SPECTATOR` فلا جسم له ولا اصطدام ولا تفاعل، ويُضبط فوق ذلك
-`invulnerable` و`collidable = false` صراحةً، وتُعاد هذه الضبطيات مرتين في الثانية
-فلا تصمد أي محاولة لتغييرها.
+The player is in `SPECTATOR` mode, so it has no body, no collision and no interaction,
+and on top of that `invulnerable` and `collidable = false` are set explicitly and
+reapplied twice a second, so no attempt to change them survives.
 
-وتُلغى كذلك الأحداث التي تمسّه دون أن تُخرجه: الضرر، والنقل (`teleport`)، وتغيير
-وضع اللعب إلى غير `SPECTATOR`. كما يُلغى **أي أمر يذكر اسمه** — من لاعب أو من
-الكونسول أو من بلوك أوامر — إلا أوامر البلوجن نفسه (`/mineflayer` و`/mf`)، وهي
-المخرج الوحيد المقصود.
+The events that touch it without removing it are cancelled too: damage, teleports, and
+any game-mode change away from `SPECTATOR`. **Any command that mentions its name** is
+also cancelled — from a player, the console or a command block — except the plugin's own
+commands (`/mineflayer` and `/mf`), which are the one intended way out.
 
-الاستثناء المتعمَّد: أمر يستخدم مُحدِّداً مثل `/kill @a` لا يُلغى، لأن إلغاء كل
-أمر فيه مُحدِّد كان سيكسر السيرفر على لاعبيه الحقيقيين حمايةً للاعب وهمي واحد.
-لا حاجة لذلك أصلاً: آثار المُحدِّد نفسها ملغاة فرداً فرداً بالأحداث أعلاه.
+The deliberate exception: a command using a selector such as `/kill @a` is not
+cancelled, because cancelling every command containing a selector would break the server
+for its real players in order to protect one fake one. There is no need for it anyway:
+the selector's own effects are cancelled one by one by the events above.
 
-كما يُضبط الـ latency على قيمة ثابتة معقولة بدل صفر، لأن صفراً هو أوضح دليل
-على أن لا اتصال حقيقياً خلف اللاعب.
+Latency is also set to a sane fixed value rather than zero, because zero is the clearest
+sign there is no real connection behind the player.
 
-الحظر والقائمة البيضاء لا تمنعان الاسترجاع: `placeNewPlayer` لا تستشير
-`canPlayerLogin` إطلاقاً، فحتى أمر حظر يُلغى كحدث طرد أولاً، ولو نفذ لأُعيد
-التسجيل بعده. هذا مؤكَّد بفحص jar السيرفر لا استنتاجاً.
+Bans and the whitelist do not stop recovery: `placeNewPlayer` never consults
+`canPlayerLogin` at all, so even a ban command is cancelled as a kick event first, and if
+one did go through the player would be re-registered afterwards. This is confirmed by
+inspecting the server jar, not inferred.
 
-الطبقات الثلاث تتوقف فور تنفيذ أمر الإخراج، وهو المخرج الوحيد المقصود.
+All three layers stop the moment the stop command runs, which is the one intended way
+out.
 
-### هوية جديدة في كل دخول
+### A new identity on every join
 
-اللاعب يدخل في **كل مرة** باسم عشوائي كامل (12 حرفاً) و UUID مختلف — الدخول الأول
-عبر الأمر وكل إعادة تسجيل تلقائية بعد أي إزالة. **لا يوجد إعداد لهذا ولا طريقة
-لإطفائه؛** هو سلوك البلوجن.
+The player joins **every time** under a fully random name (12 characters) and a different
+UUID — the first join from the command and every automatic re-registration after any
+removal. **There is no setting for this and no way to turn it off;** it is how the plugin
+behaves.
 
-والمقابل يُقال بصراحة: اللاعب لا يملك هوية باقية. كل دخول يكتب ملفاً جديداً في
-`world/playerdata` لا يُعاد استخدامه، ولا شيء مرتبط بـ UUID — صلاحية، أو مكان في
-قائمة بيضاء — ينتقل من دخول لِما بعده. والاسم في رسائل الأمر والكونسول يتغير كل
-مرة، لأن `name()` يرجّع الاسم المستخدم فعلاً لا ثابتاً.
+And the cost is stated plainly: the player owns no lasting identity. Every join writes a
+fresh file under `world/playerdata` that is never reused, and nothing keyed to a UUID — a
+permission, a place on a whitelist — carries from one join to the next. The name in
+command messages and the console changes every time, because `name()` returns the name
+actually in use rather than a constant.
 
-ودرع الأوامر يمشي مع الاسم الجديد بلا تعديل، لأن `FakePlayerGuard` يقرأ
-`manager.name()` في كل مرة لا مرة واحدة.
+The command shield follows the new name with no changes, because `FakePlayerGuard` reads
+`manager.name()` every time rather than once.
 
-## البوت البعيد
+## The remote bot
 
-`/mf m connectto <ip> <port> start` يُدخل بوتاً إلى **سيرفر آخر**، ولا يحتاج ذلك
-السيرفر إلى تثبيت أي بلوجن.
+`/mf m connectto <ip> <port> start` joins a bot to **another server**, and that server
+does not need any plugin installed.
 
-السبب أن البوت ليس تسجيلاً محلياً كاللاعب الوهمي أعلاه، بل **اتصال عميل حقيقي**:
-البلوجن يفتح socket على السيرفر الهدف ويتكلم بروتوكول ماينكرافت كما يتكلمه أي
-عميل — Handshake ثم Login ثم Configuration ثم Play. الهدف يرى لاعباً عادياً
-يدخل، ولهذا لا يحتاج أن يعرف عنّا شيئاً.
+The reason is that the bot is not a local registration like the fake player above, but a
+**real client connection**: the plugin opens a socket to the target server and speaks the
+Minecraft protocol the way any client speaks it — Handshake, then Login, then
+Configuration, then Play. The target sees an ordinary player joining, which is why it
+does not need to know anything about us.
 
-النطاق **اتصال وبقاء**: البوت يردّ على الـ keepalive والـ ping، ويؤكد التنقل،
-ويعيد الاتصال تلقائياً إن انقطع، وينقل رسائل الهدف إلى كونسول سيرفرك. لا يتحرك
-ولا يبني ولا يقاتل.
+The scope is **connect and stay**: the bot answers keepalives and pings, confirms
+teleports, reconnects automatically if it drops, and relays the target's messages to your
+server's console. It does not move, build or fight.
 
-### حماية البوت البعيد من الطرد
+### Keeping the remote bot from being kicked
 
-على السيرفر البعيد لا نملك إلغاء الأحداث كما نفعل محلياً، فالحماية الوحيدة
-الممكنة هي **ألّا نعطي السيرفر سبباً**. البوت يسدّ كل مسار طرد آلي:
+On a remote server we cannot cancel events the way we do locally, so the only protection
+available is **not to give the server a reason**. The bot closes off every automatic kick
+path:
 
-| المسار | ما يفعله البوت |
+| Path | What the bot does |
 |---|---|
-| `player-idle-timeout` | `player_input` كل 15 ثانية |
-| مهلة تحميل العميل | `player_loaded` فور دخول طور اللعب |
-| مهلة الـ keepalive | ردّ على `keep_alive` و`ping` |
-| فحوصات الطيران | `move_player_status_only` كل ثانية بعلامة "على الأرض" |
-| الموت المتكرر | إحياء تلقائي عند `set_health ≤ 0` أو `player_combat_kill` |
-| رفض حزمة الموارد | قبولها والإبلاغ بتحميلها في طوري الإعداد واللعب |
-| كشف العملاء غير الرسميين | `minecraft:brand = vanilla` وإعدادات عميل افتراضية |
+| `player-idle-timeout` | `player_input` every 15 seconds |
+| Client-loading timeout | `player_loaded` as soon as the play phase begins |
+| Keepalive timeout | Answers `keep_alive` and `ping` |
+| Flight checks | `move_player_status_only` every second with the "on ground" flag |
+| Repeated death | Automatic respawn on `set_health ≤ 0` or `player_combat_kill` |
+| Resource-pack refusal | Accepts it and reports it loaded, in both the configuration and play phases |
+| Non-vanilla client detection | `minecraft:brand = vanilla` and default client settings |
 
-التفصيل المهم في الجدول أعلاه هو **مهلة الخمول**، وهي أكثر سبب يطرد بوتاً صامتاً.
-الردّ على الـ keepalive لا يكفي: بفحص jar السيرفر، لا شيء يُصفّر `lastActionTime`
-سوى تغيّر موضع حقيقي أو حِزمة `player_input`. واخترنا `player_input` تحديداً لأنها
-تُصفّر المؤقت **دون أن تدّعي أي موضع**، فلا يمكن أن تسقط في فحص حركة أو طيران.
+The detail that matters most in the table above is the **idle timeout**, the most common
+reason a silent bot gets kicked. Answering keepalives is not enough: by inspection of the
+server jar, nothing resets `lastActionTime` except a genuine position change or a
+`player_input` packet. We chose `player_input` specifically because it resets the timer
+**without claiming any position**, so it cannot fail a movement or flight check.
 
-#### ما يبقى مكشوفاً — بصراحة
+#### What stays exposed — honestly
 
-الطرد الآلي مسدود، لكن **قرار إنسان لا يمكن سدّه**. إن دخل مشرف الهدف ونفّذ
-`/ban` أو أضاف اسمك لقائمة حظر، أو فعّل قائمة بيضاء لا تضمّك، أو حظر عنوان
-سيرفرك — فالبوت خارج. لا يوجد ما يمنع ذلك، لأننا لا نملك ذلك السيرفر ولا نستطيع
-إلغاء أحداثه. أي ادّعاء بغير ذلك سيكون كذباً.
+Automatic kicks are closed off, but **a human decision cannot be**. If the target's admin
+logs in and runs `/ban`, or adds your name to a ban list, or turns on a whitelist that
+does not include you, or blocks your server's address — the bot is out. Nothing prevents
+that, because we do not own that server and cannot cancel its events. Any claim otherwise
+would be a lie.
 
-وللسبب نفسه، البوت على الهدف **لاعب عادي تماماً**: أوامر ذلك السيرفر تؤثر فيه
-كما تؤثر في أي لاعب — يُنقَل ويُقتَل ويُغيَّر وضع لعبه. الحماية من الأوامر في
-القسم السابق تخصّ اللاعب المحلي وحده، لأنها مبنية على إلغاء أحداث Bukkit، وهو
-شيء لا نملكه إلا على سيرفرنا.
+For the same reason, on the target the bot is **an entirely ordinary player**: that
+server's commands affect it the way they affect any player — it can be teleported,
+killed, and have its game mode changed. The command protection in the previous section
+applies to the local player alone, because it is built on cancelling Bukkit events, which
+is something we only have on our own server.
 
-ما نضمنه: لن يخرج البوت **بسبب شيء فعله أو أهمل فعله**. وإن أُخرج رغم ذلك عاد
-فوراً، وإن طال رفض الهدف عاد اللاعب المحلي مؤقتاً حتى لا تبقى بلا لاعب.
+What we do guarantee: the bot will not leave **because of anything it did or failed to
+do**. And if it is removed anyway it comes back at once, and if the target keeps refusing
+for long enough the local player returns in the meantime so you are never left with no
+player.
 
-### الانتقال مع اللاعب المحلي
+### The handoff with the local player
 
-عند **نجاح** دخول البوت للهدف يخرج اللاعب الوهمي المحلي، وعند `stop` يعود.
-الترتيب مقصود: لا يُخرَج اللاعب المحلي قبل تأكيد الدخول البعيد، حتى لا تخسر
-الاثنين إن رفض الهدف الاتصال.
+When the bot **successfully** joins the target, the local fake player leaves, and on
+`stop` it comes back. The order is deliberate: the local player is not removed before the
+remote join is confirmed, so you do not lose both if the target refuses the connection.
 
-### إعادة الاتصال
+### Reconnecting
 
-**إن خرج البوت من الهدف بعد أن استقرّ فيه — طرداً أو إعادة تشغيل أو انقطاعاً —
-يُعاد إدخاله فوراً بلا أي انتظار.** هذا هو المقصود: السيرفر المرسل يراقب البوت،
-وأي خروج لم يأتِ من أمر `stop` يُعالَج بإعادة اتصال في الحال.
+**If the bot leaves the target after having settled there — kicked, restarted, or
+dropped — it is rejoined immediately with no wait at all.** That is the intent: the
+sending server watches the bot, and any departure that did not come from a `stop` command
+is answered with a reconnect right away.
 
-أما ما لم يستقرّ — اتصال لم يدخل أصلاً، أو دخل ثم أُخرج في ثوانٍ — فتتباطأ محاولاته
-تصاعدياً من ثانية حتى ثلاثين، و**لا تتوقف** ما دام البوت مطلوباً. التمييز بين
-الحالتين بطول الجلسة (عشر ثوانٍ)، وهو ضروري: هدف يطرد فوراً يبلغ طور اللعب أيضاً
-لثانية، ولولا هذا الشرط لأعاد البلوجن الاتصال بلا توقف بأقصى سرعة الشبكة.
+Anything that did not settle — a connection that never got in, or got in and was thrown
+out within seconds — backs off progressively from one second up to thirty, and **does not
+stop** for as long as the bot is meant to be running. The two cases are told apart by
+session length (ten seconds), and that is necessary: a target that kicks on sight also
+reaches the play phase, for a second, and without this condition the plugin would
+reconnect endlessly at whatever speed the network allows.
 
-أسباب رفض الهدف مؤقتة في الغالب — سيرفر يعيد التشغيل، أو نائم، أو ممتلئ — والبوت
-الذي استسلم قبل عشر دقائق لا يختلف عن بوت لم يُشغَّل. الحد الأعلى للتباطؤ هو ما
-يمنع ملء الكونسول، والفشل المتكرر يُسجَّل كل عشرين محاولة بدل كل محاولة.
+The reasons a target refuses are mostly temporary — a server restarting, asleep, or
+full — and a bot that gave up ten minutes ago is no different from one that was never
+started. The backoff ceiling is what keeps the console from filling up, and repeated
+failures are logged once every twenty attempts rather than on every one.
 
-عند بلوغ التباطؤ حدّه يعود اللاعب الوهمي المحلي تلقائياً، ويستمر البوت في
-المحاولة في الخلفية؛ فإن رجع الهدف ودخل البوت خرج المحلي من جديد.
+When the backoff reaches its ceiling the local fake player returns automatically while the
+bot keeps trying in the background; if the target comes back and the bot joins, the local
+one leaves again.
 
-اتصال يصل لطور اللعب يصفّر العدّاد، فالبوت الذي عاش طويلاً ثم انقطع مرة لا يرث
-فشلاً قديماً.
+A connection that reaches the play phase resets the counter, so a bot that lived a long
+time and then dropped once does not inherit an old failure.
 
-### الحساب
+### The account
 
-يُقرأ من `config.yml`:
+Read from `config.yml`:
 
-| المفتاح | الغرض |
+| Key | Purpose |
 |---|---|
-| `remote.username` | اسم الحساب الـ premium — يُتجاهل على هدف `online-mode=false` |
-| `remote.access-token` | توكن حساب مايكروسوفت — للأهداف بـ `online-mode=true` فقط |
-| `remote.uuid` | uuid الحساب، مطلوب مع التوكن |
-| `remote.relay-chat` | نقل رسائل الهدف إلى الكونسول |
+| `remote.username` | The premium account's name — ignored on an `online-mode=false` target |
+| `remote.access-token` | A Microsoft account token — for `online-mode=true` targets only |
+| `remote.uuid` | The account's uuid, required alongside the token |
+| `remote.relay-chat` | Relay the target's messages to the console |
 
-**هدف بـ `online-mode=false`:** اترك `access-token` فارغاً، ولا يلزم شيء آخر —
-البوت يولّد اسمه و uuid‏ه لكل محاولة والهدف يأخذهما كما هما.
+**An `online-mode=false` target:** leave `access-token` empty, and nothing else is
+needed — the bot generates its own name and uuid for every attempt and the target takes
+them at face value.
 
-**هدف بـ `online-mode=true`:** يلزم حساب مايكروسوفت حقيقي يملك ذلك الاسم، بتوكنه
-و uuid‏ه. **لا يوجد تجاوز لهذا:** السيرفر الهدف يسأل Mojang، والتحقق يحدث عند
-Mojang لا عنده، فلا شيء في هذا البلوجن يمكن أن ينوب عنه. لا يمكن انتحال حساب لا
-تملكه. التوكنات قصيرة العمر، فإن بدأ الهدف يبلغ برفض الجلسة فالتوكن انتهت صلاحيته.
+**An `online-mode=true` target:** a real Microsoft account that owns that name is
+required, with its token and uuid. **There is no way around this:** the target server asks
+Mojang, and the verification happens at Mojang rather than at the target, so nothing in
+this plugin can stand in for it. You cannot impersonate an account you do not own. Tokens
+are short-lived, so if the target starts reporting a session failure, the token has
+expired.
 
-عامِل `config.yml` كملف سرّي بمجرد وضع توكن فيه.
+Treat `config.yml` as a secret file the moment a token goes into it.
 
-#### هوية جديدة في كل اتصال
+#### A new identity on every connection
 
-البوت يدخل الهدف في **كل محاولة** — الأولى وكل إعادة اتصال — باسم عشوائي كامل و
-UUID عشوائي، فلا يُقدَّم اسم رُفض مرتين. **لا يوجد إعداد لهذا.**
+The bot joins the target on **every attempt** — the first one and every reconnect — under
+a fully random name and a random UUID, so a name that was refused is never presented
+twice. **There is no setting for this.**
 
-الاستثناء الوحيد هو الحساب الـ premium، وهو استثناء اضطراري لا اختياري: التوكن
-يوثّق اسماً واحداً بعينه، فاسم مولَّد سيُرفض من Mojang في كل محاولة والبوت لن يدخل
-أبداً. لذلك يُبلَّغ في الكونسول مرة واحدة أن الحساب سيبقى على اسمه.
+The one exception is a premium account, and it is a forced exception rather than an
+optional one: the token authenticates one specific name, so a generated name would be
+rejected by Mojang on every attempt and the bot would never get in. So it is reported once
+in the console that the account will keep its own name.
 
-والمقابل: لا ينتقل للبوت مخزون ولا موضع ولا صلاحية ولا مكان في قائمة بيضاء من
-دخول لِما بعده، وكل دخول غريب على الهدف.
+And the cost: no inventory, no position, no permission and no place on a whitelist carries
+from one join to the next, and every join is a stranger to the target.
 
-وبصراحة عن حدوده: يتجاوز حظراً على **الاسم**، ولا يفعل شيئاً تجاه حظر على
-**العنوان**، وهو ما يلجأ إليه الهدف حين يلاحظ أسماءً لا تتكرر.
+Honestly about its limits: it gets past a ban on a **name**, and does nothing about a ban
+on an **address**, which is what a target resorts to when it notices names that never
+repeat.
 
-### البروتوكول
+### The protocol
 
-أرقام الحِزم تُستخرج من السيرفر وقت التشغيل عبر `ProtocolInfo$Details.listPackets`،
-لا مرمَّزة في الكود. هذا ما يُبقي jar واحداً صالحاً على 26.1.x و26.2.x معاً: الأرقام
-تختلف فعلياً بين السلسلتين، وجدول مرمَّز قديم كان سيرسل حِزماً سليمة الشكل بأرقام
-خاطئة — وهو فشل صامت ومربك، أسوأ من الفشل الواضح.
+Packet ids are extracted from the server at runtime through
+`ProtocolInfo$Details.listPackets`, not hard-coded. That is what keeps one jar valid on
+both 26.1.x and 26.2.x: the numbers genuinely differ between the two lines, and a stale
+hard-coded table would have sent well-formed packets under wrong ids — a silent, confusing
+failure, worse than an obvious one.
 
-الحِزم التي لا يحتاجها البوت تُتخطّى بايتاتها دون فكّ ترميز. هذا ليس اختصاراً بل
-ما يجعل الميزة صامدة: الفارق الوحيد في الحِزم بين 26.1 و26.2 يقع داخل حِزمة نتخطّاها.
+Packets the bot does not need have their bytes skipped without being decoded. That is not
+a shortcut but what makes the feature hold up: the only packet difference between 26.1 and
+26.2 falls inside a packet we skip.
 
-## المعلومات
+## Details
 
-- **الاسم:** Mineflayer
-- **الصانع:** DevGBX9
-- **الباكيج:** `com.devgbx9.mineflayer`
+- **Name:** Mineflayer
+- **Author:** DevGBX9
+- **Package:** `com.devgbx9.mineflayer`
 - **Java:** 25
 
-## الهيكل
+## Structure
 
 ```
-src/main/java/com/devgbx9/mineflayer/Mineflayer.java          - كلاس البلوجن
-src/main/java/com/devgbx9/mineflayer/MineflayerCommand.java   - الأوامر
-src/main/java/com/devgbx9/mineflayer/FakePlayerManager.java   - اللاعب الوهمي
-src/main/java/com/devgbx9/mineflayer/FakePlayerGuard.java     - حجب الطرد
-src/main/java/com/devgbx9/mineflayer/NmsReflect.java          - أدوات الـ reflection
-src/main/java/com/devgbx9/mineflayer/RandomIdentity.java      - توليد الأسماء العشوائية
-src/main/java/com/devgbx9/mineflayer/remote/RemoteBotManager.java     - دورة حياة البوت
-src/main/java/com/devgbx9/mineflayer/remote/RemoteBotConnection.java  - آلة أطوار البروتوكول
-src/main/java/com/devgbx9/mineflayer/remote/PacketIds.java            - أرقام الحِزم وقت التشغيل
-src/main/java/com/devgbx9/mineflayer/remote/FrameCodec.java           - الإطار والضغط والتشفير
-src/main/java/com/devgbx9/mineflayer/remote/PacketBuf.java            - قراءة وكتابة الأنواع
-src/main/java/com/devgbx9/mineflayer/remote/MojangAuth.java           - مصادقة premium
-src/main/java/com/devgbx9/mineflayer/remote/BotAccount.java           - هوية البوت
-src/main/resources/plugin.yml                                 - بيانات البلوجن
-src/main/resources/config.yml                                 - إعدادات اللاعب الوهمي والبوت البعيد
+src/main/java/com/devgbx9/mineflayer/Mineflayer.java          - the plugin class
+src/main/java/com/devgbx9/mineflayer/MineflayerCommand.java   - the commands
+src/main/java/com/devgbx9/mineflayer/FakePlayerManager.java   - the fake player
+src/main/java/com/devgbx9/mineflayer/FakePlayerGuard.java     - kick blocking
+src/main/java/com/devgbx9/mineflayer/NmsReflect.java          - reflection helpers
+src/main/java/com/devgbx9/mineflayer/RandomIdentity.java      - random name generation
+src/main/java/com/devgbx9/mineflayer/remote/RemoteBotManager.java     - bot lifecycle
+src/main/java/com/devgbx9/mineflayer/remote/RemoteBotConnection.java  - protocol phase machine
+src/main/java/com/devgbx9/mineflayer/remote/PacketIds.java            - runtime packet ids
+src/main/java/com/devgbx9/mineflayer/remote/FrameCodec.java           - framing, compression, encryption
+src/main/java/com/devgbx9/mineflayer/remote/PacketBuf.java            - reading and writing types
+src/main/java/com/devgbx9/mineflayer/remote/MojangAuth.java           - premium authentication
+src/main/java/com/devgbx9/mineflayer/remote/BotAccount.java           - the bot's identity
+src/main/resources/plugin.yml                                 - plugin metadata
+src/main/resources/config.yml                                 - fake player and remote bot settings
 ```
+
